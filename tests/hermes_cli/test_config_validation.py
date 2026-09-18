@@ -184,3 +184,34 @@ class TestUnknownTopLevelKeys:
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
 
+
+class TestModelSectionDefault:
+    """``DEFAULT_CONFIG['model']`` is a mapping carrying model-scoped defaults, but ``model``
+    stays polymorphic: a user string shorthand must still replace it wholesale, and a user
+    mapping must deep-merge so the defaults flow in without clobbering user keys."""
+
+    def test_default_model_is_mapping_with_confirm_tokens(self):
+        assert isinstance(DEFAULT_CONFIG["model"], dict)
+        assert DEFAULT_CONFIG["model"]["switch_context_confirm_tokens"] == 100000
+
+    def test_string_shorthand_replaces_model_wholesale(self):
+        from hermes_cli.config import _deep_merge
+        import copy
+        merged = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), {"model": "gpt-4o"})
+        assert merged["model"] == "gpt-4o"
+
+    def test_user_mapping_deep_merges_defaults_without_clobber(self):
+        from hermes_cli.config import _deep_merge
+        import copy
+        merged = _deep_merge(
+            copy.deepcopy(DEFAULT_CONFIG),
+            {"model": {"default": "x", "provider": "openai-codex"}},
+        )
+        assert merged["model"]["default"] == "x"
+        assert merged["model"]["provider"] == "openai-codex"
+        assert merged["model"]["switch_context_confirm_tokens"] == 100000
+
+    def test_confirm_tokens_path_is_known_without_force(self):
+        from hermes_cli.config import _validate_config_key
+        assert _validate_config_key("model.switch_context_confirm_tokens") == (True, None)
+

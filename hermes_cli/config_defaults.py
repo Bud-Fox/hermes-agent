@@ -19,7 +19,16 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 
 DEFAULT_CONFIG = {
-    "model": "",
+    # ``model`` is polymorphic: a bare string shorthand ("gpt-4o") OR a mapping. The default is a
+    # mapping carrying only documented model-scoped knobs so they surface in dumped config / update
+    # prompts and register as known ``config set`` paths. A user string shorthand still replaces it
+    # wholesale (_deep_merge: non-dict-over-dict overrides); a user mapping deep-merges, so these
+    # defaults flow in without clobbering the user's default/provider/base_url.
+    "model": {
+        # 0 disables the "LARGE CONTEXT MODEL SWITCH" cost-confirm dialog; smart auto-compression
+        # (top-level compression.*) still preserves the live context. See model_selection_guards.py.
+        "switch_context_confirm_tokens": 100000,
+    },
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
