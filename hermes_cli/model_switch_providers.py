@@ -1194,6 +1194,115 @@ def list_authenticated_providers(
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 
+# Router-readiness glyphs surfaced next to each picker row. Cosmetic; ``·`` == "no signal".
+_GLYPH = {"ready": "●", "partial": "◐", "depleted": "○", "cred_dead": "⚠", "unknown": "·"}
+
+
+def _row_readiness(vh, model_ids):
+    """(state, ready_model_ids, has_million_ready) for one row given its ``VendorHealth`` (or None).
+
+    ``vh is None`` -> ``"unknown"`` (router silent about this vendor). No row is ever hidden by this;
+    the result only feeds ranking/annotation."""
+    if vh is None:
+        return "unknown", [], False
+    ready_ids = [m for m in model_ids if m in vh.models] if vh.is_ready() else []
+    if vh.is_ready():
+        state = "ready" if vh.ready_keys == vh.total_keys else "partial"
+    elif vh.statuses.get("dead") or "cred_dead" in vh.statuses:
+        state = "cred_dead"
+    elif vh.total_keys:
+        state = "depleted"
+    else:
+        state = "unknown"
+    has_million_ready = vh.is_ready() and any(
+        vh.models.get(m) and vh.models[m].is_million() for m in model_ids)
+    return state, ready_ids, has_million_ready
+
+
+def _apply_health_overlay(results, health, picker_cfg):
+    """Annotate every row with router readiness and re-rank (ready + 1M first).
+
+    Reads ``health`` (``{vendor: VendorHealth}``, possibly ``{}``) and mutates each row with
+    ``readiness``/``ready_model_ids``/``has_million_ready``/``ready_keys``/``glyph``/
+    ``not_ready_collapsed``. NEVER drops a row: ``collapse_not_ready`` and ``million_only`` only set
+    flags / influence order. With empty ``health`` every row is ``"unknown"`` and the ranking degrades
+    to (current-first, most-models), matching the pre-overlay sort."""
+    floor = int(picker_cfg.get("readiness_floor", 40))
+    million_only = bool(picker_cfg.get("million_only", False))
+    for r in results:
+        vh = health.get(str(r.get("slug", "")).lower()) or health.get(str(r.get("provider_id", "")).replace("contabo-", "").lower())
+        state, ready_ids, has_m = _row_readiness(vh, r.get("models") or [])
+        r["readiness"], r["ready_model_ids"], r["has_million_ready"] = state, ready_ids, has_m
+        r["ready_keys"] = getattr(vh, "ready_keys", 0)
+        r["glyph"] = _GLYPH[state]
+        r["not_ready_collapsed"] = bool(picker_cfg.get("collapse_not_ready", True)) and state in ("depleted", "cred_dead")
+    def keyf(r):
+        million_rank = 0 if (r.get("has_million_ready") or not million_only) else 1
+        return (not r.get("is_current"), r.get("readiness") not in ("ready", "partial"),
+                million_rank, -int(r.get("ready_keys", 0)), -int(r.get("total_models", 0)))
+    results.sort(key=keyf)
+    return results
+
+
+def _load_picker_cfg() -> dict:
+    """Effective (profile-scoped) ``model.picker`` mapping via the same loader other picker code
+    uses (``hermes_cli.config.load_config``), or ``{}`` on ANY error / non-mapping (fail-open —
+    the picker then behaves exactly as before)."""
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = load_config().get("model")
+        if isinstance(model_cfg, dict):
+            picker = model_cfg.get("picker")
+            if isinstance(picker, dict):
+                return picker
+    except Exception:
+        pass
+    return {}
+
+
+def _router_root_from_base_url(base_url: str) -> str:
+    """The contabo-router ROOT (``scheme://host:port``) from a vendor sub-path base_url, else "".
+
+    ``http://h:8790/vendor/gemini/v1`` -> ``http://h:8790``. A non-empty result is returned only when
+    the URL carries the router's ``/vendor/`` signature; any other URL (a direct vendor API, a bare
+    host) yields "" so ``fetch_health`` is never pointed at a non-router endpoint."""
+    base_url = str(base_url or "").strip()
+    if "/vendor/" not in base_url:
+        return ""
+    return base_url.split("/vendor/", 1)[0].rstrip("/")
+
+
+def _router_base_url_for_picker(picker_cfg: dict | None = None) -> str:
+    """Base URL for ``fetch_health`` (which appends ``/api/stats``), or "" to disable the overlay.
+
+    Prefers an explicit ``picker.router_stats_url``; otherwise derives the router ROOT from the CURRENT
+    provider's base_url (``model.base_url``, else ``providers[model.provider].base_url``) by stripping
+    the ``/vendor/...`` sub-path. Returns "" (overlay disabled -> old sort) whenever a safe router root
+    cannot be derived. Fail-open on ANY error."""
+    try:
+        if picker_cfg is None:
+            picker_cfg = _load_picker_cfg()
+        explicit = str((picker_cfg or {}).get("router_stats_url") or "").strip()
+        if explicit:
+            return explicit.rstrip("/")
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model")
+        if not isinstance(model_cfg, dict):
+            return ""
+        base = str(model_cfg.get("base_url") or "").strip()
+        if not base:
+            provider = str(model_cfg.get("provider") or "").strip()
+            providers = cfg.get("providers")
+            if provider and isinstance(providers, dict):
+                entry = providers.get(provider)
+                if isinstance(entry, dict):
+                    base = str(entry.get("base_url") or "").strip()
+        return _router_root_from_base_url(base)
+    except Exception:
+        return ""
+
+
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
@@ -1229,8 +1338,21 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                 row["total_models"] = row.get("total_models", len(models)) + 1
             break
 
-    # Current provider first, then by model count descending
-    results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+    # Current provider first, then router readiness (ready + 1M), then by model count descending.
+    # The whole health overlay is FAIL-OPEN: ANY exception (config load, network, parse, bad shape)
+    # falls back to the original (current-first, most-models) sort. Rows are only annotated/reordered
+    # here — NEVER dropped — so the catalog stays intact even when the router is unreachable.
+    try:
+        from hermes_cli.picker_health import fetch_health
+        picker_cfg = _load_picker_cfg() or {}   # reads model.picker via effective loader; {} disables
+        if picker_cfg.get("health_aware", True):
+            base = _router_base_url_for_picker(picker_cfg)  # router root or router_stats_url; "" disables
+            health = fetch_health(base, readiness_floor=int(picker_cfg.get("readiness_floor", 40))) if base else {}
+            results = _apply_health_overlay(results, health, picker_cfg)
+        else:
+            results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+    except Exception:
+        results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
     return results
 
 
