@@ -103,7 +103,7 @@ def _cap_id(call_id: str, limit: int = 64) -> str:
         return call_id
     digest = hashlib.sha256(call_id.encode("utf-8", "surrogatepass")).hexdigest()
     # keep "call_" prefix if present so provider heuristics still see a call id
-    prefix = "call_" if call_id.startswith("call_") else "call_"
+    prefix = "call_"  # always tag with a call_ prefix so provider id heuristics still fire
     body = digest[: max(1, limit - len(prefix))]
     return (prefix + body)[:limit]
 
@@ -115,13 +115,19 @@ def _cap_tool_call_ids(messages: list, limit: int = 64) -> bool:
     mapping: dict[str, str] = {}
     changed = False
     for m in messages:
+        if not isinstance(m, dict):
+            continue
         for tc in (m.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
             cid = tc.get("id")
             if isinstance(cid, str) and len(cid) > limit:
                 new = mapping.setdefault(cid, _cap_id(cid, limit))
                 if new != cid:
                     tc["id"] = new; changed = True
     for m in messages:
+        if not isinstance(m, dict):
+            continue
         tcid = m.get("tool_call_id")
         if isinstance(tcid, str) and tcid in mapping:
             m["tool_call_id"] = mapping[tcid]; changed = True
