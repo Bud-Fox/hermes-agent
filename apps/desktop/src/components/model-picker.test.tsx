@@ -231,6 +231,36 @@ describe('ModelPickerDialog readiness overlay', () => {
       expect(current?.getAttribute('aria-selected')).toBe('true')
     })
   })
+
+  it('fail-open cursor is cmdk first-item, not the current model', async () => {
+    // Discriminating fixture: NO overlay keys, and the current model (Qwen…) is
+    // the SECOND row. True fail-open = cmdk's uncontrolled first-item highlight,
+    // which here is a NON-current model — so this proves the fallback is
+    // "first item", not "cursor on current". (The default OPTIONS fixture puts
+    // the current model first, where the two behaviors are indistinguishable.)
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      model: 'Qwen3.6-27B-UD-Q4_K_XL',
+      provider: 'llamacpp',
+      providers: [
+        { slug: 'nous', name: 'Nous', models: ['glm-4.6-omni', 'gemini-3.8-flash'], authenticated: true },
+        { slug: 'llamacpp', name: 'Local', models: ['Qwen3.6-27B-UD-Q4_K_XL'], is_current: true, authenticated: true }
+      ]
+    })
+    renderPicker()
+
+    await screen.findByText('glm-4.6-omni')
+
+    // No glyph (no overlay keys), first item highlighted, current NOT highlighted.
+    expect(screen.queryByRole('img', { hidden: true, name: /ready|partial|depleted|unknown|credential/i })).toBeNull()
+    await waitFor(() => {
+      const first = screen.getByText('glm-4.6-omni').closest('[cmdk-item]')
+
+      expect(first?.getAttribute('aria-selected')).toBe('true')
+    })
+    const current = screen.getByText('Qwen3.6-27B-UD-Q4_K_XL').closest('[cmdk-item]')
+
+    expect(current?.getAttribute('aria-selected')).toBe('false')
+  })
 })
 
 describe('ModelPickerDialog search ranking', () => {
