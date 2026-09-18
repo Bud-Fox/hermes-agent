@@ -95,6 +95,64 @@ _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii,
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
 
 
+def _cap_id(call_id: str, limit: int = 64) -> str:
+    """Deterministically shorten a ``tool_call`` id to ``<= limit`` chars, keeping a
+    ``call_`` prefix so provider heuristics still recognize it as a call id. sha256 of the
+    original makes the same input map to the same output on every side of a request."""
+    if len(call_id) <= limit:
+        return call_id
+    digest = hashlib.sha256(call_id.encode("utf-8", "surrogatepass")).hexdigest()
+    # keep "call_" prefix if present so provider heuristics still see a call id
+    prefix = "call_" if call_id.startswith("call_") else "call_"
+    body = digest[: max(1, limit - len(prefix))]
+    return (prefix + body)[:limit]
+
+
+def _cap_tool_call_ids(messages: list, limit: int = 64) -> bool:
+    """Cap every oversized ``tool_calls[].id`` and rewrite the paired ``tool_call_id`` with
+    the SAME capped value (one mapping dict → consistent both sides), so request/response
+    pairing survives. Short ids are untouched (idempotent). Returns True if anything changed."""
+    mapping: dict[str, str] = {}
+    changed = False
+    for m in messages:
+        for tc in (m.get("tool_calls") or []):
+            cid = tc.get("id")
+            if isinstance(cid, str) and len(cid) > limit:
+                new = mapping.setdefault(cid, _cap_id(cid, limit))
+                if new != cid:
+                    tc["id"] = new; changed = True
+    for m in messages:
+        tcid = m.get("tool_call_id")
+        if isinstance(tcid, str) and tcid in mapping:
+            m["tool_call_id"] = mapping[tcid]; changed = True
+    return changed
+
+
+def _provider_enforces_64_id(agent: Any) -> bool:
+    """True only for the OpenAI-compatible Chat Completions wire, which hard-limits
+    ``tool_call.id`` to 64 chars — a longer id (e.g. a composite id minted by another
+    provider earlier in the conversation) is a non-retryable 400
+    ``Invalid 'messages[..].tool_calls[..].id': string too long``.
+
+    Fail-safe: any error reading agent attributes returns False (cap nothing, behave as
+    before). Scoped to ``api_mode == "chat_completions"`` — the exact wire where the
+    production 400 occurred (contabo-openai chat). Gemini-native rides that same api_mode
+    but on a native base_url with its own id rules, so it is excluded by base_url.
+    ``codex_responses`` is deliberately NOT included: it has its own id clamp
+    (``_clamp_responses_call_id``) applied in its own preflight AFTER this sanitize step, and
+    Anthropic-native (``anthropic_messages``) uses a different message shape and id rules.
+    """
+    try:
+        if getattr(agent, "api_mode", None) != "chat_completions":
+            return False
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+        if is_native_gemini_base_url(getattr(agent, "base_url", "") or ""):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     """Outbound-request chokepoint for every built kwargs dict (main loop and iteration summary).
 
@@ -102,10 +160,16 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     providers reject with a non-retryable 400 (#50959); one in-place walk makes the whole
     payload json.dumps()-safe. The ASCII strip is opt-in via the recovery flag set after an
     ASCII-codec rejection.
+
+    On the OpenAI-compatible chat wire, oversized ``tool_call`` ids are capped to 64 chars
+    with a deterministic, pair-consistent remap (a >64-char id is a non-retryable 400).
     """
     _sanitize_structure_surrogates(api_kwargs)
     if agent._force_ascii_payload:
         _sanitize_structure_non_ascii(api_kwargs)
+    msgs = api_kwargs.get("messages")
+    if isinstance(msgs, list) and _provider_enforces_64_id(agent):
+        _cap_tool_call_ids(msgs, limit=64)
 
 
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
