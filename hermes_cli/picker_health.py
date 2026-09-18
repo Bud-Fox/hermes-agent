@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 import json
+import time
 import urllib.request
 
 MILLION = 1_000_000
@@ -18,8 +19,11 @@ class ModelHealth:
     model_id: str
     context: int
     enabled: bool = True
+    usable_keys: int = 0  # ready keys that SUPPORT this model AND are not in model-cooldown now
     def is_million(self) -> bool:
         return self.context >= MILLION
+    def is_usable(self) -> bool:
+        return self.usable_keys >= 1
 
 
 @dataclass
@@ -41,7 +45,30 @@ def ready_key(k: dict, floor: int) -> bool:
         return False
 
 
+def _model_usable_on_key(k: dict, mid: str, now: float) -> bool:
+    """True when ready key ``k`` can serve model ``mid`` RIGHT NOW.
+
+    Fail-open by omission: a router that reports neither ``supported_models`` nor
+    ``model_cooldowns`` leaves both checks inert, so a ready key counts as usable (today's
+    behavior). Excluded only on POSITIVE evidence: the model sits in ``unsupported_models``, an
+    explicit non-empty ``supported_models`` omits it, or a ``model_cooldowns[mid]`` timestamp is
+    still in the future.
+    """
+    unsup = k.get("unsupported_models") or []
+    if mid in unsup:
+        return False
+    sup = k.get("supported_models")
+    if isinstance(sup, list) and sup and mid not in sup:
+        return False
+    mc = k.get("model_cooldowns") or {}
+    until = mc.get(mid)
+    if isinstance(until, (int, float)) and until > now:
+        return False
+    return True
+
+
 def parse_stats(stats: dict, *, readiness_floor: int = 40) -> dict:
+    now = time.time()
     pools = stats.get("pools") or {}
     models_by_vendor = stats.get("models") or {}
     out: dict = {}
@@ -50,11 +77,13 @@ def parse_stats(stats: dict, *, readiness_floor: int = 40) -> dict:
         statuses: dict = {}
         cooldowns = []
         ready = 0
+        ready_keys_list = []
         for k in keys:
             st = k.get("status")
             statuses[st] = statuses.get(st, 0) + 1
             if ready_key(k, readiness_floor):
                 ready += 1
+                ready_keys_list.append(k)
             cr = k.get("cooldown_remaining")
             if isinstance(cr, (int, float)) and cr > 0:
                 cooldowns.append(float(cr))
@@ -63,7 +92,10 @@ def parse_stats(stats: dict, *, readiness_floor: int = 40) -> dict:
             mid = m.get("id")
             if not mid:
                 continue
-            mh[mid] = ModelHealth(mid, int(m.get("context") or 0), bool(m.get("enabled", True)))
+            usable = sum(1 for k in ready_keys_list if _model_usable_on_key(k, mid, now))
+            mh[mid] = ModelHealth(
+                mid, int(m.get("context") or 0), bool(m.get("enabled", True)),
+                usable_keys=usable)
         out[vendor] = VendorHealth(
             vendor=vendor, ready_keys=ready, total_keys=len(keys),
             statuses=statuses, min_cooldown_remaining=min(cooldowns) if cooldowns else None,

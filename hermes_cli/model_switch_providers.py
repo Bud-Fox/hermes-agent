@@ -1204,12 +1204,22 @@ def _row_readiness(vh, model_ids):
     """(state, ready_model_ids, has_million_ready) for one row given its ``VendorHealth`` (or None).
 
     ``vh is None`` -> ``"unknown"`` (router silent about this vendor). No row is ever hidden by this;
-    the result only feeds ranking/annotation."""
+    the result only feeds ranking/annotation. ``ready_model_ids`` and ``has_million_ready`` count a
+    model only when it is USABLE right now (a ready key supports it and it is not in per-model
+    cooldown) — a vendor with live keys but every catalogued model on model-cooldown ranks below a
+    vendor whose models actually answer. Fail-open: a router that omits per-model cooldown/support
+    reports ``usable_keys == ready_keys``, so this collapses to the old key-level behavior."""
     if vh is None:
         return "unknown", [], False
-    ready_ids = [m for m in model_ids if m in vh.models] if vh.is_ready() else []
+    def _usable(m):
+        mh = vh.models.get(m)
+        return bool(mh and mh.is_usable())
+    ready_ids = [m for m in model_ids if _usable(m)] if vh.is_ready() else []
     if vh.is_ready():
-        state = "ready" if vh.ready_keys == vh.total_keys else "partial"
+        # 'ready' only when keys are all healthy AND at least one catalogued model is usable now;
+        # live keys with every model on cooldown degrade to 'partial' (honest, still not hidden).
+        all_keys_ready = vh.ready_keys == vh.total_keys
+        state = "ready" if (all_keys_ready and ready_ids) else "partial"
     elif vh.statuses.get("dead") or "cred_dead" in vh.statuses:
         state = "cred_dead"
     elif vh.total_keys:
@@ -1217,7 +1227,7 @@ def _row_readiness(vh, model_ids):
     else:
         state = "unknown"
     has_million_ready = vh.is_ready() and any(
-        vh.models.get(m) and vh.models[m].is_million() for m in model_ids)
+        _usable(m) and vh.models[m].is_million() for m in model_ids)
     return state, ready_ids, has_million_ready
 
 
