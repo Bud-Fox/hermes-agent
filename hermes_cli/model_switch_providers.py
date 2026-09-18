@@ -1252,6 +1252,7 @@ def _mark_preferred_default(results, health):
     never removes or reorders rows. Callers wrap this in the fail-open overlay try so any
     exception degrades to no preselection.
     """
+    health = health or {}
     for r in results:
         if r.get("readiness") in ("ready", "partial") and r.get("has_million_ready"):
             vh = health.get(str(r.get("slug", "")).lower())
