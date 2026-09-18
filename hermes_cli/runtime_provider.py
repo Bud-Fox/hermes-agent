@@ -692,6 +692,12 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
         logger.info("%s; falling through to next provider.", spec.failure_msg)
         return None
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
+    # Honour model.openai_runtime=codex_app_server here too, not just on the pool path
+    # (_resolve_runtime_from_pool_entry): a ChatGPT-account codex provider has no explicit
+    # creds/pool and resolves through this OAuth rung, so without the rewrite chatgpt-web/*
+    # requests went to the remote Responses endpoint (HTTP 400 "not supported") instead of
+    # the local Native2 app-server runtime.
+    api_mode = _maybe_apply_codex_app_server_runtime(provider=provider, api_mode=str(api_mode), model_cfg=model_cfg)
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,
                     creds.get("api_key", ""), source=creds.get("source", spec.default_source),
                     **{spec.expiry_key: creds.get(spec.expiry_key)}, requested_provider=requested_provider)
