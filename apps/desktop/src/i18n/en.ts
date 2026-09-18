@@ -3607,7 +3607,12 @@ export const en: Translations = {
     free: 'Free',
     freeTier: 'Free tier',
     priceTitle: 'Input / Output price per million tokens',
-    wasPrice: 'was'
+    wasPrice: 'was',
+    readyStatus: 'Ready',
+    partialStatus: 'Partially available',
+    depletedStatus: 'Rate limited',
+    credDeadStatus: 'Credentials failing',
+    unknownStatus: 'Status unknown'
   },
 
   modelVisibility: {

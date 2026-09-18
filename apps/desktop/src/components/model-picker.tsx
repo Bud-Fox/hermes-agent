@@ -1,11 +1,11 @@
 import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderMatches, modelOptionsQueryKey, preferredCursorValue, providerReadiness, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -149,6 +149,30 @@ export function ModelPickerDialog({
 
   const providers = modelOptions.data?.providers ?? []
 
+  // Seed the picker's initial cursor ONCE per open — from the first options
+  // payload that names a `preferred_model` (the Python health overlay marks the
+  // top ready+1M provider row; the server ranks that row first). Opening the
+  // picker is user-initiated, so moving the highlight there is DESIGN-clean.
+  //
+  // Frozen per open via a render-time ref (React's "init a ref once" idiom, not
+  // an effect that mirrors state): once the first payload seeds it, a later
+  // background refetch — e.g. a local download finishing — can't move the
+  // cursor. Reset when closed so the next open re-seeds. Undefined seed → no
+  // key change → today's uncontrolled first-item highlight (fail-open when the
+  // overlay is absent). Only the highlight moves; the model is never switched.
+  const cursorSeedRef = useRef<{ readonly seeded: boolean; readonly seed: string | undefined }>({
+    seeded: false,
+    seed: undefined
+  })
+
+  if (!open) {
+    cursorSeedRef.current = { seeded: false, seed: undefined }
+  } else if (!cursorSeedRef.current.seeded && modelOptions.data) {
+    cursorSeedRef.current = { seeded: true, seed: preferredCursorValue(modelOptions.data.providers ?? []) }
+  }
+
+  const cursorSeed = cursorSeedRef.current.seed
+
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
     { model: currentModel, provider: currentProvider },
     modelOptions.data
@@ -190,7 +214,18 @@ export function ModelPickerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Command className="rounded-none bg-card" shouldFilter={false}>
+        <Command
+          className="rounded-none bg-card"
+          defaultValue={cursorSeed}
+          // cmdk reads defaultValue only at mount; the options payload arrives
+          // async, so remount once when the cursor seed resolves to plant the
+          // initial highlight on the preferred row. After that the key is
+          // stable, so arrow-key navigation and pointer selection own the
+          // cursor normally (no re-seed on keystroke). Undefined seed keeps the
+          // single 'default' key → today's uncontrolled first-item behavior.
+          key={cursorSeed ?? 'default'}
+          shouldFilter={false}
+        >
           <CommandInput autoFocus onValueChange={setSearch} placeholder={copy.search} value={search} />
           <CommandList className="max-h-96">
             {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
@@ -505,6 +540,24 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 
+  // Router readiness the Python overlay stamped on this row (fail-open: {}
+  // when the payload isn't annotated → no glyph, exactly like today).
+  const { glyph, readiness } = providerReadiness(provider)
+
+  // A bare status symbol needs an accessible name — map the readiness to an
+  // i18n label and a semantic color (same emerald/amber/destructive palette
+  // the tier badge and price tags already use in this file). An annotated row
+  // whose readiness string is unrecognized still gets the neutral "unknown"
+  // label so the glyph is never unlabeled.
+  const statusLabel = readiness ? (READINESS_LABEL[readiness] ?? 'unknownStatus') : 'unknownStatus'
+  const statusColor = readiness ? (READINESS_COLOR[readiness] ?? 'text-muted-foreground') : 'text-muted-foreground'
+
+  const statusGlyph = glyph ? (
+    <span aria-label={copy[statusLabel]} className={cn('shrink-0 leading-none', statusColor)} role="img">
+      {glyph}
+    </span>
+  ) : null
+
   // Two different facts wear the same badge: `free_tier` is a signed-in Nous
   // account on the free plan; `free_tier_row` is the no-account route's own
   // row. Either way the user is on free inference, so say so. Never match the
@@ -522,6 +575,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
 
   return (
     <span className="flex min-w-0 items-center gap-2">
+      {statusGlyph}
       <span className="truncate">{provider.name}</span>
       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
@@ -529,4 +583,26 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
       {tierBadge}
     </span>
   )
+}
+
+// Router readiness → i18n aria-label key. The glyph's accessible name; keeps
+// the status legible to screen readers and to the tests. An unrecognized
+// readiness falls back to `unknownStatus` at the call site.
+const READINESS_LABEL: Record<string, 'readyStatus' | 'partialStatus' | 'depletedStatus' | 'credDeadStatus' | 'unknownStatus'> = {
+  ready: 'readyStatus',
+  partial: 'partialStatus',
+  depleted: 'depletedStatus',
+  cred_dead: 'credDeadStatus',
+  unknown: 'unknownStatus'
+}
+
+// Router readiness → semantic color, reusing the emerald/amber/destructive
+// palette already present in this file (tier badge, price tags). Depleted and
+// unknown stay neutral like the row's own slug·count metadata.
+const READINESS_COLOR: Record<string, string> = {
+  ready: 'text-emerald-600 dark:text-emerald-400',
+  partial: 'text-amber-600 dark:text-amber-400',
+  depleted: 'text-muted-foreground',
+  cred_dead: 'text-destructive',
+  unknown: 'text-muted-foreground'
 }

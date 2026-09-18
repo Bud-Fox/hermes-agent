@@ -3690,7 +3690,12 @@ export const zh = defineLocale({
     free: '免费',
     freeTier: '免费层',
     priceTitle: '每百万 token 的输入/输出价格',
-    wasPrice: '原价'
+    wasPrice: '原价',
+    readyStatus: '就绪',
+    partialStatus: '部分可用',
+    depletedStatus: '速率受限',
+    credDeadStatus: '凭据失效',
+    unknownStatus: '状态未知'
   },
 
   modelVisibility: {

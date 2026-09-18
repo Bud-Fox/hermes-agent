@@ -152,6 +152,87 @@ describe('ModelPickerDialog download rows', () => {
   })
 })
 
+describe('ModelPickerDialog readiness overlay', () => {
+  // The Python health overlay annotates each provider row in place with
+  // snake_case keys (glyph/readiness/has_million_ready/preferred_model). The
+  // generated ModelOptionProvider carries `[key: string]: unknown`, so a
+  // fixture can set them directly. `nous` is the top ready+1M provider and
+  // carries a preferred_model that is NOT its first row, so a passing cursor
+  // assertion can only come from the wiring (not from the default first-item
+  // selection).
+  const READY_OPTIONS: ModelOptionsResult = {
+    model: 'Qwen3.6-27B-UD-Q4_K_XL',
+    provider: 'llamacpp',
+    providers: [
+      {
+        slug: 'nous',
+        name: 'Nous',
+        models: ['glm-4.6-omni', 'gemini-3.8-flash'],
+        authenticated: true,
+        glyph: '●',
+        readiness: 'ready',
+        has_million_ready: true,
+        preferred_model: 'gemini-3.8-flash'
+      },
+      {
+        slug: 'llamacpp',
+        name: 'Local',
+        models: ['Qwen3.6-27B-UD-Q4_K_XL'],
+        is_current: true,
+        authenticated: true
+      }
+    ]
+  }
+
+  it('renders the provider status glyph with an accessible label', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue(READY_OPTIONS)
+    renderPicker()
+
+    // The glyph is a bare symbol, so it needs an i18n-sourced accessible name.
+    // cmdk marks the group heading aria-hidden (its text feeds the group's
+    // aria-labelledby name), so query with hidden:true to reach the node.
+    const status = await screen.findByRole('img', { hidden: true, name: /ready/i })
+
+    expect(status.textContent).toBe('●')
+  })
+
+  it('defaults the initial cursor to the preferred ready-1M model', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue(READY_OPTIONS)
+    renderPicker()
+
+    await screen.findByText('gemini-3.8-flash')
+
+    // The preferred row — not the first row (glm-4.6-omni) and not the current
+    // model (Qwen…) — is the initially highlighted cmdk item.
+    await waitFor(() => {
+      const preferred = screen.getByText('gemini-3.8-flash').closest('[cmdk-item]')
+
+      expect(preferred?.getAttribute('aria-selected')).toBe('true')
+    })
+
+    const first = screen.getByText('glm-4.6-omni').closest('[cmdk-item]')
+
+    expect(first?.getAttribute('aria-selected')).toBe('false')
+  })
+
+  it('fails open with no overlay keys: no glyph, cursor falls back to current', async () => {
+    // OPTIONS carries none of the overlay keys — must render exactly as today.
+    renderPicker()
+
+    await screen.findByText('Qwen3.6-27B-UD-Q4_K_XL')
+
+    // No status glyph node anywhere.
+    expect(screen.queryByRole('img', { hidden: true, name: /ready|partial|depleted|unknown|credential/i })).toBeNull()
+
+    // Today's behavior: the first item — here the current model — is highlighted.
+    await waitFor(() => {
+      const current = screen.getByText('Qwen3.6-27B-UD-Q4_K_XL').closest('[cmdk-item]')
+
+      expect(current?.getAttribute('aria-selected')).toBe('true')
+    })
+  })
+})
+
 describe('ModelPickerDialog search ranking', () => {
   // Rows must come out in the order the shared fuzzyRank produces — the same
   // helper the web and TUI pickers use — so a query ranks identically on

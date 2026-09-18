@@ -2939,7 +2939,12 @@ export const zhHant = defineLocale({
     free: '免費',
     freeTier: '免費層',
     priceTitle: '每百萬 Token 的輸入/輸出價格',
-    wasPrice: '原價'
+    wasPrice: '原價',
+    readyStatus: '就緒',
+    partialStatus: '部分可用',
+    depletedStatus: '速率受限',
+    credDeadStatus: '憑證失效',
+    unknownStatus: '狀態未知'
   },
 
   modelVisibility: {

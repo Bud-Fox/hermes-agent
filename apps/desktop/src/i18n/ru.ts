@@ -3275,7 +3275,12 @@ export const ru = defineLocale({
     free: 'Free',
     freeTier: 'Бесплатный тариф',
     priceTitle: 'Цена вход / выход за миллион токенов',
-    wasPrice: 'было'
+    wasPrice: 'было',
+    readyStatus: 'Готово',
+    partialStatus: 'Частично доступно',
+    depletedStatus: 'Ограничение запросов',
+    credDeadStatus: 'Ошибка учётных данных',
+    unknownStatus: 'Статус неизвестен'
   },
 
   modelVisibility: {

@@ -3132,6 +3132,11 @@ export interface Translations {
     freeTier: string
     priceTitle: string
     wasPrice: string
+    readyStatus: string
+    partialStatus: string
+    depletedStatus: string
+    credDeadStatus: string
+    unknownStatus: string
   }
 
   modelVisibility: {

@@ -18,6 +18,77 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
   )
 }
 
+/** The router health overlay the Python picker path stamps onto each provider
+ *  row IN PLACE (`_apply_health_overlay` + `_mark_preferred_default`). The
+ *  generated `ModelOptionProvider` carries `[key: string]: unknown`, so these
+ *  snake_case keys survive to the desktop payload without widening the
+ *  contract. Read them here — never by editing the generated type. */
+export interface ProviderReadiness {
+  /** Status symbol already mapped server-side (●/◐/○/⚠/·). */
+  glyph?: string
+  /** ready | partial | depleted | cred_dead | unknown. */
+  readiness?: string
+  /** The top ready/partial+1M provider's model to seed the picker cursor on. */
+  preferred_model?: string
+  /** Whether this provider has a ready ≥1M-context model. */
+  has_million_ready?: boolean
+}
+
+/** Read the health-overlay keys off a provider row with runtime typeof guards.
+ *  Fail-open: a missing or wrong-typed key is omitted, so an un-annotated
+ *  payload (older backend, overlay off) degrades to today's exact behavior —
+ *  no glyph, cursor on current. Never throws. */
+export function providerReadiness(provider: ModelOptionProvider): ProviderReadiness {
+  const out: ProviderReadiness = {}
+  const glyph = provider['glyph']
+
+  if (typeof glyph === 'string' && glyph.length > 0) {
+    out.glyph = glyph
+  }
+
+  const readiness = provider['readiness']
+
+  if (typeof readiness === 'string' && readiness.length > 0) {
+    out.readiness = readiness
+  }
+
+  const preferred = provider['preferred_model']
+
+  if (typeof preferred === 'string' && preferred.length > 0) {
+    out.preferred_model = preferred
+  }
+
+  const million = provider['has_million_ready']
+
+  if (typeof million === 'boolean') {
+    out.has_million_ready = million
+  }
+
+  return out
+}
+
+/** The cmdk item value for a (provider, model) pick — the picker's item
+ *  `value` and the seed for the initial highlight share this one shape. */
+export function pickerItemValue(providerSlug: string, model: string): string {
+  return `${providerSlug}:${model}`
+}
+
+/** The value to seed the picker's initial cursor on when it OPENS: the first
+ *  provider row that names a `preferred_model` (server ranks ready+1M first),
+ *  as a `slug:model` cmdk value. `undefined` when no row is annotated — the
+ *  caller then falls back to today's uncontrolled first-item highlight. */
+export function preferredCursorValue(providers: readonly ModelOptionProvider[]): string | undefined {
+  for (const provider of providers) {
+    const { preferred_model } = providerReadiness(provider)
+
+    if (preferred_model && (provider.models ?? []).includes(preferred_model)) {
+      return pickerItemValue(provider.slug, preferred_model)
+    }
+  }
+
+  return undefined
+}
+
 /** The catalog's option support for the current pick, or undefined while the
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */

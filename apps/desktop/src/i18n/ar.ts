@@ -2574,7 +2574,12 @@ export const ar = defineLocale({
     proNeedsSubscription: 'يتطلب اشتراكا',
     free: 'مجاني',
     freeTier: 'طبقة مجانية',
-    priceTitle: 'السعر'
+    priceTitle: 'السعر',
+    readyStatus: 'جاهز',
+    partialStatus: 'متاح جزئيًا',
+    depletedStatus: 'محدود بالمعدل',
+    credDeadStatus: 'فشل بيانات الاعتماد',
+    unknownStatus: 'حالة غير معروفة'
   },
   modelVisibility: {
     title: 'النماذج',
