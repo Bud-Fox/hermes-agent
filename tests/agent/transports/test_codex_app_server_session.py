@@ -176,6 +176,16 @@ class TestLifecycle:
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
 
+    def test_thread_start_passes_selected_model(self):
+        """A Hermes picker selection must become the native Codex thread model."""
+        client = FakeClient()
+        s = make_session(client, model="chatgpt-web/high")
+
+        s.ensure_started()
+
+        _method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert params["model"] == "chatgpt-web/high"
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)
@@ -925,4 +935,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

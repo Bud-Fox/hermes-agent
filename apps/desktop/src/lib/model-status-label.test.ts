@@ -9,6 +9,9 @@ describe('model-status-label', () => {
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(displayModelName('chatgpt-web/high')).toBe('ChatGPT Web — High')
+    expect(displayModelName('chatgpt-web/medium')).toBe('ChatGPT Web — Medium')
+    expect(displayModelName('chatgpt-web/light')).toBe('ChatGPT Web — Instant')
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {

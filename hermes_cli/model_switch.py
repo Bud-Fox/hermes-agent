@@ -1413,14 +1413,15 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
         headers = st.validation_headers or (
             _extra_headers_from_config(st.user_providers.get(st.target_provider))
             if st.user_providers and st.target_provider in st.user_providers else None)
-    # A ``providers.<key>`` endpoint is the user's own: validate it as a custom endpoint (an id its
-    # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
-    # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing
-    # branch and hard-rejected the very model the user selected.
+    # A ``providers.<key>`` entry with its own endpoint is the user's own: validate it as a custom
+    # endpoint (an id its listing lacks is soft-accepted) whether the slug arrived as
+    # ``custom:<key>`` or the bare key the picker rows carry. A models-only entry for a built-in
+    # provider is only a catalog extension; treating it as custom would make native OAuth routes
+    # such as openai-codex probe the ChatGPT backend for a non-existent ``/models`` endpoint.
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        if pdef is not None and pdef.source == "user-config" and pdef.base_url:
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(

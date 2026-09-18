@@ -406,7 +406,8 @@ def _ensure_codex_session(agent) -> None:
     # interim commentary while codex_app_server is running — only the final answer (#33200). Supersedes the
     # narrower item/started-only bridge from #38835.
     agent._codex_session = CodexAppServerSession(
-        cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
+        cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), model=getattr(agent, "model", None),
+        approval_callback=approval_callback,
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
     )

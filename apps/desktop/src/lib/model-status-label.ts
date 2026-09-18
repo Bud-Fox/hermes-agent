@@ -49,6 +49,12 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
   [/-latest$/i, 'Latest']
 ]
 
+const CHATGPT_WEB_MODEL_LABELS: Readonly<Record<string, string>> = {
+  'chatgpt-web/light': 'ChatGPT Web — Instant',
+  'chatgpt-web/medium': 'ChatGPT Web — Medium',
+  'chatgpt-web/high': 'ChatGPT Web — High'
+}
+
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 function prettifyBase(base: string): string {
@@ -70,6 +76,11 @@ function prettifyBase(base: string): string {
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
 export function modelDisplayParts(model: string): { name: string; tag: string } {
+  const bridgeLabel = CHATGPT_WEB_MODEL_LABELS[model.trim().toLowerCase()]
+  if (bridgeLabel) {
+    return { name: bridgeLabel, tag: '' }
+  }
+
   let base = modelBaseId(model)
   let tag = ''
 

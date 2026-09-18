@@ -855,9 +855,10 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
     return has_creds
 
 
-def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
+def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 2: Hermes-only providers (nous, openai-codex, copilot, opencode-go, ...)."""
     from agent.models_dev import PROVIDER_TO_MODELS_DEV
+    from hermes_cli.model_switch import _declared_model_ids
     from hermes_cli.providers import HERMES_OVERLAYS
 
     # HERMES_OVERLAYS keys may be models.dev IDs ("github-copilot") while config.yaml uses
@@ -884,6 +885,12 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
             model_ids = _nous_picker_model_ids(b.curated, b.force_fresh_nous_tier) if real_account else []
         else:
             model_ids = _live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid)
+        # An explicitly configured models list extends native discovery. This is needed for
+        # local bridge routes (for example chatgpt-web/high) which a provider's upstream
+        # OAuth catalog cannot advertise, while retaining the account-entitled native models.
+        configured = user_providers.get(hermes_slug) if isinstance(user_providers, dict) else None
+        configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         b.add_builtin_row(
             hermes_slug, get_label(hermes_slug), b.current_provider in (hermes_slug, pid), model_ids, "hermes")
         b.seen_slugs.add(pid.lower())
@@ -1177,7 +1184,7 @@ def list_authenticated_providers(
 
     _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
-    _lap_overlay_rows(b, data)
+    _lap_overlay_rows(b, data, user_providers)
     _lap_canonical_rows(b)
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)

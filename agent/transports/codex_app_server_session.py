@@ -151,7 +151,7 @@ class CodexAppServerSession:
 
     def __init__(
         self, *, cwd: Optional[str] = None, codex_bin: str = "codex",
-        codex_home: Optional[str] = None, permission_profile: Optional[str] = None,
+        codex_home: Optional[str] = None, model: Optional[str] = None, permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
@@ -160,6 +160,7 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        self._model = str(model or "").strip() or None
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
         )
@@ -187,7 +188,10 @@ class CodexAppServerSession:
         self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
-        result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
+        params = {"cwd": self._cwd}
+        if self._model:
+            params["model"] = self._model
+        result = self._client.request("thread/start", params, timeout=15)
         # Different codex versions serialize the id under thread.id / sessionId / threadId.
         thread_obj = result.get("thread") or {}
         thread_id = thread_obj.get("id") or thread_obj.get("sessionId") or result.get("sessionId") or result.get("threadId")
