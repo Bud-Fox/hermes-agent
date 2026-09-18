@@ -43,6 +43,27 @@ def test_glyph_reflects_status():
     assert by["gemini"]["readiness"] == "ready" and by["gemini"]["glyph"] == "●"
     assert by["openrouter"]["readiness"] == "depleted" and by["openrouter"]["glyph"] == "○"
 
+def test_router_health_binds_by_vendor_path_not_bare_slug():
+    """REGRESSION: router readiness must annotate the /vendor/<v>/ row, not a same-named DIRECT one.
+
+    A direct provider (bare slug 'gemini', DIRECT googleapis URL, no /vendor/) must NOT borrow the
+    router's 'gemini' pool health -> stays 'unknown' (no glyph). The router row for the same vendor
+    (slug 'contabo-gemini', api_url .../vendor/gemini/v1) is the one that gets 'ready'/'●'.
+    """
+    rows = [
+        {"slug": "gemini", "is_current": False,
+         "api_url": "https://generativelanguage.googleapis.com/v1beta",
+         "models": ["gemini-3.8-flash"], "total_models": 50},
+        {"slug": "contabo-gemini", "is_current": False,
+         "api_url": "http://194.34.232.59:8790/vendor/gemini/v1",
+         "models": ["gemini-3.8-flash"], "total_models": 30},
+    ]
+    health = parse_stats(STATS, readiness_floor=40)
+    out = _apply_health_overlay(rows, health, {"readiness_floor": 40, "collapse_not_ready": False, "million_only": False})
+    by = {r["slug"]: r for r in out}
+    assert by["gemini"]["readiness"] == "unknown" and by["gemini"]["glyph"] == "·"   # direct: no router health
+    assert by["contabo-gemini"]["readiness"] == "ready" and by["contabo-gemini"]["glyph"] == "●"  # router-backed
+
 def test_top_row_marks_first_ready_million_as_preferred():
     from hermes_cli.model_switch_providers import _mark_preferred_default
     rows = [{"slug": "gemini", "readiness": "ready", "has_million_ready": True,

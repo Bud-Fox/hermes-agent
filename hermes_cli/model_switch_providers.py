@@ -1221,6 +1221,30 @@ def _row_readiness(vh, model_ids):
     return state, ready_ids, has_million_ready
 
 
+def _health_vendor_key(row: dict) -> str:
+    """Router vendor name for a picker row, or "" when the row is NOT router-backed.
+
+    Router readiness (``/api/stats`` pools) must annotate ONLY rows whose traffic goes through the
+    contabo-router. The authoritative signal is the ``/vendor/<vendor>/`` segment in the row's
+    endpoint (``http://host:8790/vendor/gemini/v1`` -> ``gemini``); this is deployment-agnostic and
+    cannot be confused with a DIRECT provider of the same vendor name (e.g. a direct
+    ``generativelanguage.googleapis.com`` gemini row, whose bare slug ``gemini`` would otherwise
+    falsely match the router pool ``gemini``). Falls back to an explicit ``contabo-<vendor>`` id
+    (``provider_id`` or ``slug``) for rows/fixtures whose endpoint URL isn't populated. A row with
+    neither signal returns "" -> ``unknown`` (no glyph), never borrowing another endpoint's health.
+    """
+    url = str(row.get("api_url") or row.get("base_url") or row.get("url") or "")
+    if "/vendor/" in url:
+        seg = url.split("/vendor/", 1)[1].split("/", 1)[0].strip().lower()
+        if seg:
+            return seg
+    for cand in (row.get("provider_id"), row.get("slug")):
+        s = str(cand or "").strip().lower()
+        if s.startswith("contabo-"):
+            return s[len("contabo-"):]
+    return ""
+
+
 def _apply_health_overlay(results, health, picker_cfg):
     """Annotate every row with router readiness and re-rank (ready + 1M first).
 
@@ -1232,7 +1256,7 @@ def _apply_health_overlay(results, health, picker_cfg):
     floor = int(picker_cfg.get("readiness_floor", 40))
     million_only = bool(picker_cfg.get("million_only", False))
     for r in results:
-        vh = health.get(str(r.get("slug", "")).lower()) or health.get(str(r.get("provider_id", "")).replace("contabo-", "").lower())
+        vh = health.get(_health_vendor_key(r))
         state, ready_ids, has_m = _row_readiness(vh, r.get("models") or [])
         r["readiness"], r["ready_model_ids"], r["has_million_ready"] = state, ready_ids, has_m
         r["ready_keys"] = getattr(vh, "ready_keys", 0)
@@ -1257,7 +1281,7 @@ def _mark_preferred_default(results, health):
     health = health or {}
     for r in results:
         if r.get("readiness") in ("ready", "partial") and r.get("has_million_ready"):
-            vh = health.get(str(r.get("slug", "")).lower())
+            vh = health.get(_health_vendor_key(r)) or health.get(str(r.get("slug", "")).lower())
             for mid in r.get("ready_model_ids", []):
                 if vh and vh.models.get(mid) and vh.models[mid].is_million():
                     r["preferred_model"] = mid
