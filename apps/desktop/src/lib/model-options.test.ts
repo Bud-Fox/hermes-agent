@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from './model-options'
+import { catalogProviderMatches, modelOptionsQueryKey, pickerModelList, requestModelOptions } from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -221,5 +221,29 @@ describe('catalogProviderMatches', () => {
     expect(catalogProviderMatches(cloudflare, 'Cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'custom:cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'openrouter')).toBe(false)
+  })
+})
+
+describe('pickerModelList', () => {
+  const full = ['a-model', 'b-model', 'c-model']
+
+  it('returns server picker_models when present (filtered picker view)', () => {
+    const provider = { models: full, picker_models: ['a-model'], name: 'X', slug: 'x' }
+    expect(pickerModelList(provider)).toEqual(['a-model'])
+  })
+
+  it('falls back to full models when picker_models is absent (older backend / filter off)', () => {
+    const provider = { models: full, name: 'X', slug: 'x' }
+    expect(pickerModelList(provider)).toEqual(full)
+  })
+
+  it('falls back to full models when picker_models is malformed (not a string array)', () => {
+    const provider = { models: full, picker_models: [1, 2], name: 'X', slug: 'x' }
+    expect(pickerModelList(provider)).toEqual(full)
+  })
+
+  it('honors an explicit empty picker_models (server hid every model for this provider)', () => {
+    const provider = { models: full, picker_models: [], name: 'X', slug: 'x' }
+    expect(pickerModelList(provider)).toEqual([])
   })
 })

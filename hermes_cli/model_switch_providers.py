@@ -1265,6 +1265,8 @@ def _apply_health_overlay(results, health, picker_cfg):
     to (current-first, most-models), matching the pre-overlay sort."""
     floor = int(picker_cfg.get("readiness_floor", 40))
     million_only = bool(picker_cfg.get("million_only", False))
+    hide_unusable = bool(picker_cfg.get("hide_unusable", False))
+    block = {str(m).strip() for m in (picker_cfg.get("block_models") or []) if str(m).strip()}
     for r in results:
         vh = health.get(_health_vendor_key(r))
         state, ready_ids, has_m = _row_readiness(vh, r.get("models") or [])
@@ -1272,6 +1274,22 @@ def _apply_health_overlay(results, health, picker_cfg):
         r["ready_keys"] = getattr(vh, "ready_keys", 0)
         r["glyph"] = _GLYPH[state]
         r["not_ready_collapsed"] = bool(picker_cfg.get("collapse_not_ready", True)) and state in ("depleted", "cred_dead")
+        # picker_models: reversible DISPLAY-only filter. Never mutates the full ``models`` (Edit-Models
+        # and every non-picker consumer keep the complete catalog). When hide_unusable is off it mirrors
+        # ``models`` minus block_models. When on, it keeps only usable models (∩ 1M if million_only) —
+        # but FAILS OPEN to the full list (still minus block_models) if the filter would empty the row
+        # (router hiccup / all cooling), so the picker is never blanked. ``block_models`` are always
+        # removed (health can't see structurally-broken ids like an unresolvable ``~alias``, proven only
+        # by a live call), and unlike the health filter a block is NEVER fail-open-restored.
+        full_models = [m for m in (r.get("models") or []) if m not in block]
+        if not hide_unusable:
+            r["picker_models"] = full_models
+        else:
+            keep = ready_ids if not million_only else [
+                m for m in ready_ids
+                if vh and vh.models.get(m) and vh.models[m].is_million()]
+            keep = [m for m in keep if m not in block]
+            r["picker_models"] = keep if keep else full_models
     def keyf(r):
         million_rank = 0 if (r.get("has_million_ready") or not million_only) else 1
         return (not r.get("is_current"), r.get("readiness") not in ("ready", "partial"),

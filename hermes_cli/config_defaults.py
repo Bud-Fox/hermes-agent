@@ -33,6 +33,10 @@ DEFAULT_CONFIG = {
             "readiness_floor": 40,       # a key counts "ready" at readiness_score >= this
             "collapse_not_ready": True,  # reversible: fold not-ready rows into an expandable group (never delete)
             "million_only": False,       # opt-in: prioritise/collapse to context >= 1_000_000
+            "hide_unusable": False,       # opt-in: drop not-ready/not-usable models from the PICKER list
+                                          #   (picker_models); full `models` and Edit-Models stay intact
+            "block_models": [],           # ids ALWAYS removed from picker_models (structurally broken,
+                                          #   proven by a live call, invisible to /api/stats); reversible
             "router_stats_url": "",      # blank -> derive from current provider base_url in code
         },
     },

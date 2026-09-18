@@ -67,6 +67,21 @@ export function providerReadiness(provider: ModelOptionProvider): ProviderReadin
   return out
 }
 
+/** The model list the PICKER should DISPLAY for a provider: the server-filtered
+ *  `picker_models` (readiness/million/block filter) when present, else the full
+ *  `models`. Fail-open: a payload without `picker_models` (older backend, filter
+ *  off) shows the complete list exactly like today. Never throws. The full
+ *  `models` is always what Edit-Models reads — this accessor is picker-only. */
+export function pickerModelList(provider: ModelOptionProvider): readonly string[] {
+  const pm = provider['picker_models']
+
+  if (Array.isArray(pm) && pm.every((m): m is string => typeof m === 'string')) {
+    return pm
+  }
+
+  return provider.models ?? []
+}
+
 /** The cmdk item value for a (provider, model) pick — the picker's item
  *  `value` and the seed for the initial highlight share this one shape. */
 export function pickerItemValue(providerSlug: string, model: string): string {
