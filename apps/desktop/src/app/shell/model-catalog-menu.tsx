@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
+import { ProviderStatusGlyph } from '@/components/provider-status-glyph'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -471,8 +472,11 @@ export function ModelCatalogMenu({
                   }}
                   textValue=""
                 >
-                  <span className="truncate">
-                    <HighlightMatches foldSeparators query={search} text={group.provider.name} />
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <ProviderStatusGlyph provider={group.provider} />
+                    <span className="truncate">
+                      <HighlightMatches foldSeparators query={search} text={group.provider.name} />
+                    </span>
                   </span>
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"

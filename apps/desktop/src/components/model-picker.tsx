@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, preferredCursorValue, providerReadiness, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderMatches, modelOptionsQueryKey, preferredCursorValue, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -18,6 +18,7 @@ import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
+import { ProviderStatusGlyph } from './provider-status-glyph'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
@@ -540,24 +541,6 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  // Router readiness the Python overlay stamped on this row (fail-open: {}
-  // when the payload isn't annotated → no glyph, exactly like today).
-  const { glyph, readiness } = providerReadiness(provider)
-
-  // A bare status symbol needs an accessible name — map the readiness to an
-  // i18n label and a semantic color (same emerald/amber/destructive palette
-  // the tier badge and price tags already use in this file). An annotated row
-  // whose readiness string is unrecognized still gets the neutral "unknown"
-  // label so the glyph is never unlabeled.
-  const statusLabel = readiness ? (READINESS_LABEL[readiness] ?? 'unknownStatus') : 'unknownStatus'
-  const statusColor = readiness ? (READINESS_COLOR[readiness] ?? 'text-muted-foreground') : 'text-muted-foreground'
-
-  const statusGlyph = glyph ? (
-    <span aria-label={copy[statusLabel]} className={cn('shrink-0 leading-none', statusColor)} role="img">
-      {glyph}
-    </span>
-  ) : null
-
   // Two different facts wear the same badge: `free_tier` is a signed-in Nous
   // account on the free plan; `free_tier_row` is the no-account route's own
   // row. Either way the user is on free inference, so say so. Never match the
@@ -575,7 +558,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
 
   return (
     <span className="flex min-w-0 items-center gap-2">
-      {statusGlyph}
+      <ProviderStatusGlyph provider={provider} />
       <span className="truncate">{provider.name}</span>
       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
@@ -583,26 +566,4 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
       {tierBadge}
     </span>
   )
-}
-
-// Router readiness → i18n aria-label key. The glyph's accessible name; keeps
-// the status legible to screen readers and to the tests. An unrecognized
-// readiness falls back to `unknownStatus` at the call site.
-const READINESS_LABEL: Record<string, 'readyStatus' | 'partialStatus' | 'depletedStatus' | 'credDeadStatus' | 'unknownStatus'> = {
-  ready: 'readyStatus',
-  partial: 'partialStatus',
-  depleted: 'depletedStatus',
-  cred_dead: 'credDeadStatus',
-  unknown: 'unknownStatus'
-}
-
-// Router readiness → semantic color, reusing the emerald/amber/destructive
-// palette already present in this file (tier badge, price tags). Depleted and
-// unknown stay neutral like the row's own slug·count metadata.
-const READINESS_COLOR: Record<string, string> = {
-  ready: 'text-emerald-600 dark:text-emerald-400',
-  partial: 'text-amber-600 dark:text-amber-400',
-  depleted: 'text-muted-foreground',
-  cred_dead: 'text-destructive',
-  unknown: 'text-muted-foreground'
 }

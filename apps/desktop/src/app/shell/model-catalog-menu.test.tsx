@@ -207,3 +207,41 @@ describe('in-flight local downloads', () => {
     expect(screen.queryByText('Local')).toBeNull()
   })
 })
+
+// The Python health overlay stamps snake_case readiness keys (glyph/readiness)
+// onto each provider row; ModelOptionProvider carries `[key: string]: unknown`,
+// so a fixture can set them directly. The catalog heading renders one glyph per
+// provider, with an i18n accessible name, and fails open (no glyph) when the
+// payload isn't annotated — exactly as an older backend behaves.
+describe('the catalog heading shows router readiness', () => {
+  it('renders a labelled status glyph on an annotated provider heading', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gemini-3.1-pro'],
+          name: 'Google',
+          slug: 'google',
+          glyph: '●',
+          readiness: 'ready'
+        }
+      ]
+    })
+
+    renderMenu()
+
+    const status = await screen.findByRole('img', { name: /ready/i })
+
+    expect(status.textContent).toBe('●')
+  })
+
+  it('shows no glyph when the payload is not annotated (fail-open)', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' }]
+    })
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.queryByRole('img', { name: /ready|partial|rate limited|credential|status unknown/i })).toBeNull()
+  })
+})
