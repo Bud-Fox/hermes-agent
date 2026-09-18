@@ -2147,6 +2147,16 @@ def _persist_switch_billing_route(agent) -> None:
         logger.warning("Failed to persist billing route after model switch", exc_info=True)
 
 
+def _retire_codex_session_for_runtime_change(agent) -> None:
+    """Release a native Codex thread before its captured runtime can be reused."""
+    codex_session = getattr(agent, "_codex_session", None)
+    if codex_session is None:
+        return
+    agent._codex_session = None
+    with contextlib.suppress(Exception):
+        codex_session.close()
+
+
 def switch_model(
     agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None
 ):
@@ -2156,6 +2166,7 @@ def switch_model(
     snapshot and re-raises (callers catch)."""
     old_model = agent.model
     old_provider = agent.provider
+    old_api_mode = agent.api_mode
     # ── Reload credential pool for the new provider (issue #52727) ── Without this,
     # ``recover_with_credential_pool`` sees a ``pool.provider != agent.provider`` mismatch and
     # short-circuits, leaving the new provider with no rotation/recovery on 401/429 and burning the original
@@ -2207,6 +2218,8 @@ def switch_model(
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
     _finish_switch(agent, new_provider, old_norm, new_norm)
+    if (old_model, old_provider, old_api_mode) != (new_model, new_provider, api_mode):
+        _retire_codex_session_for_runtime_change(agent)
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,
