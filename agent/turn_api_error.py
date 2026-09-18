@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_cli.error_classify import classify_failure
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -25,6 +26,8 @@ from agent.turn_recovery import (
 )
 
 logger = logging.getLogger("agent.conversation_loop")
+# End-to-end routing/decision observability (INFO → agent.log/errors.log; never a prompt payload).
+_dlog = logging.getLogger("hermes.decision")
 
 
 @dataclass
@@ -118,6 +121,17 @@ def handle_api_error(
         classified.retryable, classified.should_compress,
         classified.should_rotate_credential, classified.should_fallback,
     )
+    # decision log: upstream failure → class → next action (fail-safe; never break error handling
+    # on a logging error). Uses the pure classifier over the http status + error text in scope.
+    try:
+        _fc_cls, _fc_next = classify_failure(status_code, str(api_error))
+        _dlog.info(
+            "failure_classify provider=%s model=%s http=%s class=%s next=%s",
+            getattr(agent, "provider", "") or "", getattr(agent, "model", "") or "",
+            status_code, _fc_cls, _fc_next,
+        )
+    except Exception:
+        pass
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,

@@ -19,6 +19,8 @@ from utils import base_url_host_matches
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.model_switch")
+# End-to-end routing/decision observability (INFO → agent.log/errors.log; never a prompt payload).
+_dlog = logging.getLogger("hermes.decision")
 
 # Aggregators whose full catalogs (70+ models) must stay visible: never capped by max_models.
 _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
@@ -1373,6 +1375,29 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
             results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
     except Exception:
         results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
+    # decision log: what the picker actually offered (fail-safe; a logging error must never
+    # break the picker). ``floor`` lives inside _apply_health_overlay, so re-read it from the
+    # picker cfg here (default 40) rather than reference an out-of-scope name.
+    try:
+        try:
+            _floor = int((_load_picker_cfg() or {}).get("readiness_floor", 40))
+        except Exception:
+            _floor = 40
+        _top = "-"
+        if results:
+            _t0 = results[0]
+            _slug = _t0.get("slug", "-")
+            _pref = _t0.get("preferred_model")
+            _top = f"{_slug}/{_pref}" if _pref else str(_slug)
+        _dlog.info(
+            "picker_build rows=%d ready=%d million_ready=%d top=%s floor=%s",
+            len(results),
+            sum(r.get("readiness") in ("ready", "partial") for r in results),
+            sum(bool(r.get("has_million_ready")) for r in results),
+            _top, _floor,
+        )
+    except Exception:
+        pass
     return results
 
 

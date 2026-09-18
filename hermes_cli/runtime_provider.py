@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+# End-to-end routing/decision observability (INFO → agent.log/errors.log; never a prompt payload).
+_dlog = logging.getLogger("hermes.decision")
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
@@ -873,6 +875,16 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_provider_disabled(requested_provider)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    # decision log: the route actually resolved (fail-safe; never break resolution on a log error).
+    # readiness/ready_keys are router-side state not available here, so they are intentionally omitted
+    # rather than fabricated — provider/model/api_mode are the facts in scope.
+    try:
+        _dlog.info(
+            "route_resolve provider=%s model=%s api_mode=%s",
+            runtime.get("provider"), target_model, runtime.get("api_mode"),
+        )
+    except Exception:
+        pass
     return runtime
 
 
