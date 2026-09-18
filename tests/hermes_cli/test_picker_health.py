@@ -27,3 +27,20 @@ def test_million_classification_is_strict_ge_1e6():
 def test_depleted_vendor_reports_status_counts():
     h = parse_stats(STATS)
     assert h["openrouter"].statuses.get("depleted") == 21
+
+def test_fetch_health_fails_open_on_malformed_but_valid_json(monkeypatch):
+    # router reachable but returns structurally wrong JSON (pools as a list) -> must return {}
+    import io, json as _json
+    from hermes_cli import picker_health
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return _json.dumps({"pools": [1, 2, 3], "models": "nope"}).encode()
+    monkeypatch.setattr(picker_health.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    assert picker_health.fetch_health("http://router.invalid") == {}
+
+def test_fetch_health_fails_open_on_network_error(monkeypatch):
+    from hermes_cli import picker_health
+    def _boom(*a, **k): raise OSError("connection refused")
+    monkeypatch.setattr(picker_health.urllib.request, "urlopen", _boom)
+    assert picker_health.fetch_health("http://router.invalid") == {}

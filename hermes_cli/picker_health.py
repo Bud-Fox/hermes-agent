@@ -72,10 +72,10 @@ def parse_stats(stats: dict, *, readiness_floor: int = 40) -> dict:
 
 
 def fetch_health(base_url: str, *, timeout: float = 4.0, readiness_floor: int = 40) -> dict:
-    url = base_url.rstrip("/") + "/api/stats"
     try:
+        url = base_url.rstrip("/") + "/api/stats"
         with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (trusted router)
             stats = json.loads(resp.read().decode("utf-8"))
+        return parse_stats(stats, readiness_floor=readiness_floor)
     except Exception:
-        return {}  # fail-open: picker behaves exactly as before when router unreachable
-    return parse_stats(stats, readiness_floor=readiness_floor)
+        return {}  # fail-open: picker behaves exactly as before when router unreachable OR returns garbage
