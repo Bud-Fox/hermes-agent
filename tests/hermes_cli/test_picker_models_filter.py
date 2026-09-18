@@ -62,14 +62,18 @@ def test_hide_unusable_without_million_keeps_usable_non_million():
     assert out[0]["models"] == FULL
 
 
-def test_hide_unusable_false_mirrors_full_models():
+def test_hide_unusable_false_mirrors_full_models_minus_dead_ids():
     health = parse_stats(STATS, readiness_floor=40)
     rows = [_row()]
     out = _apply_health_overlay(rows, health, {
         "readiness_floor": 40, "collapse_not_ready": False,
         "million_only": True, "hide_unusable": False})
-    # no filtering requested -> picker_models mirrors the full list
-    assert out[0]["picker_models"] == FULL
+    # No readiness/million filtering requested -> picker_models mirrors the full list EXCEPT proven
+    # dead ids: deepseek-r1 is catalogued but appears in NO key's supported_models while nvidia does
+    # probe (nemotron/kimi), so it is auto-classed dead and dropped even with hide_unusable off.
+    assert out[0]["picker_models"] == [
+        "nvidia/nemotron-3-super-120b-a12b", "moonshotai/kimi-k3"]
+    assert out[0]["models"] == FULL  # full catalog untouched (Edit-Models)
 
 
 def test_fail_open_empty_health_does_not_blank_picker():

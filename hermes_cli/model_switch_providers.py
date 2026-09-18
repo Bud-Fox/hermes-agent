@@ -1274,21 +1274,33 @@ def _apply_health_overlay(results, health, picker_cfg):
         r["ready_keys"] = getattr(vh, "ready_keys", 0)
         r["glyph"] = _GLYPH[state]
         r["not_ready_collapsed"] = bool(picker_cfg.get("collapse_not_ready", True)) and state in ("depleted", "cred_dead")
+        # DEAD IDs (class A): a catalog id with ZERO live-successful probes AT A VENDOR THAT DOES
+        # probe (vh.ever_probed) is structurally broken — e.g. an unresolvable ``~alias`` the router
+        # lists but no key can serve. Auto-derived from supported_models (the router's own live-probe
+        # provenance), so a new broken alias is caught WITHOUT touching the manual block_models list.
+        # A fully-depleted vendor (ever_probed False) proves nothing about its ids, so nothing is
+        # auto-dead there. Dead ids join the block set: always dropped, never fail-open-restored.
+        dead = set()
+        if vh is not None and getattr(vh, "ever_probed", False):
+            for mid in (r.get("models") or []):
+                mh = vh.models.get(mid)
+                if mh is not None and getattr(mh, "probed_ok_keys", 0) == 0:
+                    dead.add(mid)
+        drop = block | dead
         # picker_models: reversible DISPLAY-only filter. Never mutates the full ``models`` (Edit-Models
         # and every non-picker consumer keep the complete catalog). When hide_unusable is off it mirrors
-        # ``models`` minus block_models. When on, it keeps only usable models (∩ 1M if million_only) —
-        # but FAILS OPEN to the full list (still minus block_models) if the filter would empty the row
-        # (router hiccup / all cooling), so the picker is never blanked. ``block_models`` are always
-        # removed (health can't see structurally-broken ids like an unresolvable ``~alias``, proven only
-        # by a live call), and unlike the health filter a block is NEVER fail-open-restored.
-        full_models = [m for m in (r.get("models") or []) if m not in block]
+        # ``models`` minus drop. When on, it keeps only usable models (∩ 1M if million_only) — but FAILS
+        # OPEN to the full list (still minus drop) if the filter would empty the row (router hiccup / all
+        # cooling), so the picker is never blanked. ``drop`` (manual block_models + auto dead ids) is
+        # always removed and, unlike the health filter, NEVER fail-open-restored.
+        full_models = [m for m in (r.get("models") or []) if m not in drop]
         if not hide_unusable:
             r["picker_models"] = full_models
         else:
             keep = ready_ids if not million_only else [
                 m for m in ready_ids
                 if vh and vh.models.get(m) and vh.models[m].is_million()]
-            keep = [m for m in keep if m not in block]
+            keep = [m for m in keep if m not in drop]
             r["picker_models"] = keep if keep else full_models
     def keyf(r):
         million_rank = 0 if (r.get("has_million_ready") or not million_only) else 1

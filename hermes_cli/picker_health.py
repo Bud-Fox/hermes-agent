@@ -20,6 +20,7 @@ class ModelHealth:
     context: int
     enabled: bool = True
     usable_keys: int = 0  # ready keys that SUPPORT this model AND are not in model-cooldown now
+    probed_ok_keys: int = 0  # active keys that list this id in supported_models (a LIVE success)
     def is_million(self) -> bool:
         return self.context >= MILLION
     def is_usable(self) -> bool:
@@ -34,6 +35,7 @@ class VendorHealth:
     statuses: dict = field(default_factory=dict)
     min_cooldown_remaining: Optional[float] = None
     models: dict = field(default_factory=dict)
+    ever_probed: bool = False  # any ACTIVE key with a non-empty supported_models (vendor answers at all)
     def is_ready(self) -> bool:
         return self.ready_keys >= 1
 
@@ -88,18 +90,25 @@ def parse_stats(stats: dict, *, readiness_floor: int = 40) -> dict:
             if isinstance(cr, (int, float)) and cr > 0:
                 cooldowns.append(float(cr))
         mh = {}
+        # A model was proven LIVE-OK on a key iff its id is in that key's supported_models. The
+        # vendor "answers at all" iff any ACTIVE key probed something (non-empty supported_models);
+        # this distinguishes a structurally-dead catalog id (0 probes at a probing vendor) from a
+        # fully-depleted vendor (nobody probed anything -> годность unknown, never auto-hidden).
+        active_keys = [k for k in keys if k.get("status") == "active"]
+        ever_probed = any((k.get("supported_models") or []) for k in active_keys)
         for m in models_by_vendor.get(vendor, []) or []:
             mid = m.get("id")
             if not mid:
                 continue
             usable = sum(1 for k in ready_keys_list if _model_usable_on_key(k, mid, now))
+            probed_ok = sum(1 for k in active_keys if mid in (k.get("supported_models") or []))
             mh[mid] = ModelHealth(
                 mid, int(m.get("context") or 0), bool(m.get("enabled", True)),
-                usable_keys=usable)
+                usable_keys=usable, probed_ok_keys=probed_ok)
         out[vendor] = VendorHealth(
             vendor=vendor, ready_keys=ready, total_keys=len(keys),
             statuses=statuses, min_cooldown_remaining=min(cooldowns) if cooldowns else None,
-            models=mh)
+            models=mh, ever_probed=ever_probed)
     return out
 
 
