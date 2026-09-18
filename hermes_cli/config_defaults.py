@@ -28,6 +28,13 @@ DEFAULT_CONFIG = {
         # 0 disables the "LARGE CONTEXT MODEL SWITCH" cost-confirm dialog; smart auto-compression
         # (top-level compression.*) still preserves the live context. See model_selection_guards.py.
         "switch_context_confirm_tokens": 100000,
+        "picker": {
+            "health_aware": True,        # read router /api/stats to rank & annotate rows
+            "readiness_floor": 40,       # a key counts "ready" at readiness_score >= this
+            "collapse_not_ready": True,  # reversible: fold not-ready rows into an expandable group (never delete)
+            "million_only": False,       # opt-in: prioritise/collapse to context >= 1_000_000
+            "router_stats_url": "",      # blank -> derive from current provider base_url in code
+        },
     },
     "providers": {},
     "fallback_providers": [],
