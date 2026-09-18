@@ -1244,6 +1244,24 @@ def _apply_health_overlay(results, health, picker_cfg):
     return results
 
 
+def _mark_preferred_default(results, health):
+    """Preselect the picker cursor on the first ready-1M model of the top matching row.
+
+    NON-DESTRUCTIVE: only SETS ``preferred_model`` on the top row whose ``readiness`` is
+    ``ready``/``partial`` AND that carries a ready 1M model. Never touches ``current_model``,
+    never removes or reorders rows. Callers wrap this in the fail-open overlay try so any
+    exception degrades to no preselection.
+    """
+    for r in results:
+        if r.get("readiness") in ("ready", "partial") and r.get("has_million_ready"):
+            vh = health.get(str(r.get("slug", "")).lower())
+            for mid in r.get("ready_model_ids", []):
+                if vh and vh.models.get(mid) and vh.models[mid].is_million():
+                    r["preferred_model"] = mid
+                    return results
+    return results
+
+
 def _load_picker_cfg() -> dict:
     """Effective (profile-scoped) ``model.picker`` mapping via the same loader other picker code
     uses (``hermes_cli.config.load_config``), or ``{}`` on ANY error / non-mapping (fail-open —
@@ -1349,6 +1367,7 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
             base = _router_base_url_for_picker(picker_cfg)  # router root or router_stats_url; "" disables
             health = fetch_health(base, readiness_floor=int(picker_cfg.get("readiness_floor", 40))) if base else {}
             results = _apply_health_overlay(results, health, picker_cfg)
+            results = _mark_preferred_default(results, health)
         else:
             results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
     except Exception:

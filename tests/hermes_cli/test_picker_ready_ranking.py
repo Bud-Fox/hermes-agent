@@ -42,3 +42,11 @@ def test_glyph_reflects_status():
     by = {r["slug"]: r for r in out}
     assert by["gemini"]["readiness"] == "ready" and by["gemini"]["glyph"] == "●"
     assert by["openrouter"]["readiness"] == "depleted" and by["openrouter"]["glyph"] == "○"
+
+def test_top_row_marks_first_ready_million_as_preferred():
+    from hermes_cli.model_switch_providers import _mark_preferred_default
+    rows = [{"slug": "gemini", "readiness": "ready", "has_million_ready": True,
+             "ready_model_ids": ["gemini-3.8-flash"], "models": ["gemini-3.8-flash", "x-non-1m"]}]
+    health = parse_stats(STATS)
+    _mark_preferred_default(rows, health)
+    assert rows[0]["preferred_model"] == "gemini-3.8-flash"
