@@ -846,8 +846,10 @@ class TestValidateCustomUnreachableFallback:
         assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
         assert "accepted without verification" in result["message"]
 
-    @pytest.mark.parametrize("api_mode", [None, "codex_responses"])
+    @pytest.mark.parametrize("api_mode", [None, "some_future_mode"])
     def test_unreachable_catalog_still_rejects_other_api_modes(self, api_mode):
+        """Codex modes are covered separately (they soft-accept — no GET /models on the
+        backend); anything OUTSIDE chat/anthropic/codex families keeps the hard-reject."""
         result = self._validate("my-proxy-model", "custom", models=None, api_mode=api_mode)
         assert result["accepted"] is False
         assert "was not saved" in result["message"]

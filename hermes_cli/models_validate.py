@@ -249,9 +249,17 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
     # Many OpenAI-compatible and Anthropic-compatible proxies (DashScope coding plan, Cline,
     # MiniMax) never implement GET /models; /chat/completions works fine. Rejecting the switch
     # here bricked `/model` for them (#12220), so both chat modes persist the name unverified.
-    accepted = req.api_mode in ("chat_completions", "anthropic_messages")
+    # The Codex modes hit the same wall: the OAuth backend (chatgpt.com/backend-api/codex) has
+    # no GET /models for machine clients (401), yet the native codex client / app-server
+    # resolves models at runtime — key this on api_mode, never on the host.
+    codex_mode = req.api_mode in ("codex_responses", "codex_app_server")
+    accepted = req.api_mode in ("chat_completions", "anthropic_messages") or codex_mode
     message = f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
-    if accepted:
+    if codex_mode:
+        message += (f"`{req.requested}` was accepted without verification — the Codex backend does not "
+                    "expose `/models`; it will be verified by the native codex "
+                    f"{'app-server' if req.api_mode == 'codex_app_server' else 'client'} at runtime.")
+    elif accepted:
         message += (f"`{req.requested}` was accepted without verification — if this endpoint does not "
                     "serve it, inference will fail; check the provider's model catalog or the model name.")
     else:
