@@ -21,12 +21,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
-    FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
+    FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+    PROVIDER_STREAM_ABORTED_ERROR_CODE)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
@@ -51,6 +52,15 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
+
+# Post-mortem terminal markers a gateway injects when the upstream stream broke:
+# contabo-router STREAM_ABORTED paths emit ``finish_reason="upstream_truncated"``
+# (upstream closed without ``[DONE]``) or ``"upstream_stalled"`` (idle timeout) over
+# HTTP 200 followed by ``[DONE]``. They arrive wearing a completion's clothes, so
+# every ``finish_reason is None`` drop-guard skips them — without this set the
+# partial text is assembled as a NORMAL response and the turn ends silently
+# truncated. Any non-contract terminal reason meaning "upstream broke" belongs here.
+_PROVIDER_STREAM_ABORTED_FINISH_REASONS = frozenset({"upstream_truncated", "upstream_stalled"})
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 
@@ -270,8 +280,44 @@ def _is_provider_stream_empty_frame_error(exc: BaseException) -> bool:
     return isinstance(error_obj, dict) and error_obj.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE
 
 
-def _iter_provider_stream_chunks(stream, *, response: Any = None):
-    """Yield SDK chunks while translating SDK-level SSE decode failures."""
+def _is_provider_stream_aborted_error(exc: BaseException) -> bool:
+    """True for the translated stream-abort error (post-mortem truncation/stall marker,
+    or an untyped mid-iterator death): the upstream broke, so the existing retryable
+    machinery (fresh-connection retry, then the main loop's fallback/backoff) applies."""
+    body = getattr(exc, "body", None)
+    error_obj = body.get("error") if isinstance(body, dict) else None
+    return isinstance(error_obj, dict) and error_obj.get("code") == PROVIDER_STREAM_ABORTED_ERROR_CODE
+
+
+def _provider_stream_aborted_error(finish_reason: Optional[str], *, response: Any = None,
+        delivered_chunks: bool = False) -> ProviderStreamError:
+    """Typed error for a stream the gateway ended post-mortem: its marker terminal chunk
+    (``upstream_truncated``/``upstream_stalled``) looks like a completion, so without this
+    translation ``_finish_chat_stream`` assembles a NORMAL response and the turn ends with
+    silently truncated text. Body carries the marker plus whether any chunk was delivered."""
+    headers = getattr(response, "headers", None) if response is not None else None
+    marker = str(finish_reason or "upstream_aborted")
+    message = ("Stream truncated mid-response after partial delivery"
+               if delivered_chunks else
+               "Stream aborted by the gateway before any content was delivered")
+    return ProviderStreamError(
+        status_code=None,
+        body={"error": {
+            "code": PROVIDER_STREAM_ABORTED_ERROR_CODE,
+            "message": message,
+            "finish_reason": marker,
+            "delivered_chunks": bool(delivered_chunks),
+        }},
+        raw_text=marker,
+        headers=headers,
+    )
+
+
+def _iter_provider_stream_chunks(stream, *, response: Any = None, delivered_any: Optional[Callable[[], bool]] = None):
+    """Yield SDK chunks while translating SDK-level SSE decode failures. A non-decode
+    exception mid-iteration means the transport died (router STREAM_ABORTED paths,
+    proxies closing early): translate it to the typed stream-abort error so the
+    existing retryable machinery applies instead of an untyped exception leaking."""
     try:
         yield from stream
     except json.JSONDecodeError as error:
@@ -279,6 +325,31 @@ def _iter_provider_stream_chunks(stream, *, response: Any = None):
         if stream_response is None:
             stream_response = getattr(stream, "response", None)
         raise _provider_stream_error_from_json_decode_error(error, response=stream_response) from error
+    except GeneratorExit:
+        raise
+    except Exception as error:
+        if isinstance(error, (ProviderStreamError, EmptyStreamError, InterruptedError)):
+            raise
+        # Errors the machinery already understands pass through untouched: httpx
+        # transport (retry-classified by type), OpenAI SDK errors (status-coded), and
+        # anything whose message carries a specific verdict (overflow, content filter,
+        # billing...) — the partial-delivery stub path classifies those by message.
+        _module = type(error).__module__ or ""
+        _passthrough = _module.startswith(("httpx", "openai"))
+        if not _passthrough:
+            with contextlib.suppress(Exception):
+                from agent.error_classifier import classify_api_error
+                _passthrough = classify_api_error(error).reason is not FailoverReason.unknown
+        if _passthrough:
+            raise
+        _delivered = bool(delivered_any and delivered_any())
+        logger.warning(
+            "Provider stream iterator died mid-flight (%s: %s; %s content); translating to a typed "
+            "stream-abort error for the retry path.", type(error).__name__, error,
+            "after partial" if _delivered else "before any")
+        raise _provider_stream_aborted_error(
+            getattr(error, "finish_reason", None), response=getattr(stream, "response", None),
+            delivered_chunks=_delivered) from error
 
 
 def _payload_has_error_shape(payload: Any) -> bool:
@@ -2886,7 +2957,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # Hermes interrupts the managed stream; Relay alone closes the provider stream.
             self.clients.set_stream_handle(stream)
 
-        for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
+        for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response,
+                delivered_any=lambda: bool(content_parts or reasoning_parts or refusal_parts or tool_calls_acc)):
             self._count_chunk(_diag, chunk)
             if self.agent._interrupt_requested:
                 # A half-read SSE response stays checked out of the httpx pool and the finally
@@ -3038,6 +3110,18 @@ class _StreamingCall(StreamingWaitMonitor):
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
+        # Post-mortem abort marker (router STREAM_ABORTED: upstream_truncated/upstream_stalled over
+        # HTTP 200 + [DONE]): a transport failure wearing a completion's clothes. Must surface as a
+        # typed retryable error — NEVER a normal response (silent truncation) and not the empty-stream
+        # path (content may have been delivered; the marker says WHY it ended, not that nothing came).
+        if str(finish_reason or "").lower() in _PROVIDER_STREAM_ABORTED_FINISH_REASONS:
+            _delivered = bool(content_parts or reasoning_parts or refusal_parts or tool_calls_acc)
+            logger.warning(
+                "Stream ended with post-mortem marker finish_reason=%s (%s content); surfacing as a "
+                "provider stream abort instead of accepting truncated output.",
+                finish_reason, "after partial" if _delivered else "zero chunks of")
+            raise _provider_stream_aborted_error(
+                finish_reason, response=getattr(stream, "response", None), delivered_chunks=_delivered)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(
@@ -3254,7 +3338,8 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
-        _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
+        _is_stream_abort = _is_provider_stream_aborted_error(e)
+        _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err or _is_stream_abort
 
         if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
             # Nothing streamed yet: drop the usage extension for this session and re-open.

@@ -27,6 +27,13 @@ PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
 # window. See ``chat_completion_helpers._maybe_disable_streaming``.
 PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE = "provider_stream_empty_frame"
 
+# The stream died before completing and the gateway said so in-band: a post-mortem
+# terminal chunk (``finish_reason="upstream_truncated"/"upstream_stalled"``) over
+# HTTP 200 + ``[DONE]`` (contabo-router STREAM_ABORTED shapes). It is a transport
+# failure wearing a completion's clothes, so it must retry/fallback like a server
+# error instead of ending the turn with silently truncated text.
+PROVIDER_STREAM_ABORTED_ERROR_CODE = "provider_stream_aborted"
+
 
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
@@ -501,6 +508,8 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
     **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
+    # In-band post-mortem truncation marker: upstream broke, retry/fallback can fix it.
+    PROVIDER_STREAM_ABORTED_ERROR_CODE: _V_SERVER_ERROR,
 }
 
 # Generic ``invalid_request_error`` is deliberately NOT a 400 validation
