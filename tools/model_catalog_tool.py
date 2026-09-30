@@ -86,7 +86,7 @@ def _request_approval(action: str, transaction_id: str) -> bool:
     verdict = request_tool_approval(
         "model_catalog", f"{action} model catalog transaction {transaction_id}",
         rule_key=f"model_catalog:{action}")
-    return verdict.get("action") == "allow"
+    return verdict.get("approved") is True
 
 
 def _prepared(plan: dict[str, Any]) -> list[PreparedChange]:
@@ -144,7 +144,8 @@ def model_catalog(action: str, model: str | None = None, pools: list[str] | None
         _atomic_json(bundle / "plan.json", plan)
         return json.dumps(_redact(plan), ensure_ascii=False)
     except Exception as exc:
-        return json.dumps({"success": False, "status": "error", "error": str(exc)}, ensure_ascii=False)
+        return json.dumps({"success": False, "status": "error", "error": str(exc),
+                           "transaction_id": transaction_id}, ensure_ascii=False)
 
 
 def _handler(args: dict[str, Any], **_kwargs: Any) -> str:
@@ -153,7 +154,7 @@ def _handler(args: dict[str, Any], **_kwargs: Any) -> str:
         transaction_id=args.get("transaction_id", "last"))
 
 
-from tools.registry import registry  # noqa: E402
+from tools.registry import registry  # noqa: E402  (normal discovery scans this literal registration)
 
 registry.register(name="model_catalog", toolset="model_catalog", schema=MODEL_CATALOG_SCHEMA,
                   handler=_handler, emoji="📚")

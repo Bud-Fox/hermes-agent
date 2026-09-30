@@ -33,7 +33,13 @@ class AdapterIO:
         return validate_requested_model(model, pool)
 
     def probe_model(self, pool: str, model: str, kind: str) -> bool:
-        raise RuntimeError(f"live {kind} probe requires an injected runner")
+        if pool == "openai-codex":
+            from hermes_cli.codex_models import probe_codex_model
+            return bool(probe_codex_model(model, kind=kind))
+        if pool == "contabo-openai":
+            from hermes_cli.models_validate import probe_openai_compatible_model
+            return bool(probe_openai_compatible_model(model, kind=kind, provider=pool))
+        raise ValueError(f"unsupported probe pool: {pool}")
 
     def run(self, command: Sequence[str], *, cwd: Path | None = None, timeout: int = 60) -> dict[str, Any]:
         result = subprocess.run(list(command), cwd=cwd, timeout=timeout, text=True, capture_output=True, check=False)
@@ -53,11 +59,11 @@ class AdapterIO:
         from hermes_cli.fleet_catalog import catalog_path
         return catalog_path().read_bytes()
 
-    def write_catalog_bytes(self, value: bytes) -> None:
+    def write_catalog_bytes(self, value: bytes, mode: int | None = None) -> None:
         from hermes_cli.fleet_catalog import catalog_path
         from hermes_cli.fleet_catalog_transactions import _atomic_write_bytes
         path = catalog_path()
-        _atomic_write_bytes(path, value, path.stat().st_mode & 0o777)
+        _atomic_write_bytes(path, value, mode if mode is not None else (path.stat().st_mode & 0o777 if path.exists() else 0o600))
 
 
 class PoolAdapter:
@@ -135,10 +141,11 @@ class ContaboOpenAIAdapter(PoolAdapter):
         return PreparedChange(self.pool, model, {"probes": probes})
 
     @staticmethod
-    def _model_list(payload: Any) -> list[str]:
-        if isinstance(payload, dict) and isinstance(payload.get("models"), list):
-            return payload["models"]
-        raise RuntimeError("router app/models.json must contain a models list")
+    def _model_list(payload: Any) -> list[dict[str, Any]]:
+        models = payload.get("openai", {}).get("models") if isinstance(payload, dict) else None
+        if isinstance(models, list) and all(isinstance(item, dict) for item in models):
+            return models
+        raise RuntimeError("router app/models.json must contain openai.models model-entry mappings")
 
     def _run_checked(self, io: AdapterIO, command: Sequence[str], timeout: int = 60) -> None:
         result = io.run(command, cwd=self.router_root, timeout=timeout)
@@ -149,8 +156,11 @@ class ContaboOpenAIAdapter(PoolAdapter):
         before = copy.deepcopy(io.read_json(self.models_path))
         after = copy.deepcopy(before)
         models = self._model_list(after)
-        if change.model not in models:
-            models.append(change.model)
+        if not any(item.get("id") == change.model for item in models):
+            template = copy.deepcopy(models[0]) if models else {"id": change.model, "name": change.model}
+            template["id"] = change.model
+            if "name" in template: template["name"] = change.model
+            models.append(template)
         io.write_json(self.models_path, after)
         try:
             self._run_checked(io, ("python", "-m", "pytest", "-q", "tests"), 120)
@@ -160,6 +170,10 @@ class ContaboOpenAIAdapter(PoolAdapter):
                     raise RuntimeError(f"post-deploy {kind} verification failed")
         except Exception:
             io.write_json(self.models_path, before)
+            self._run_checked(io, (str(self.deploy_script),), 300)
+            for kind in ("manifest", "models", "canary"):
+                if not io.probe_model(self.pool, change.model, kind):
+                    raise RuntimeError(f"compensation {kind} verification failed")
             raise
         return AppliedChange(change, {"models_before": before})
 
@@ -167,6 +181,10 @@ class ContaboOpenAIAdapter(PoolAdapter):
         before = applied.rollback_data.get("models_before")
         if before is not None:
             io.write_json(self.models_path, before)
+            self._run_checked(io, (str(self.deploy_script),), 300)
+            for kind in ("manifest", "models", "canary"):
+                if not io.probe_model(self.pool, applied.prepared.model, kind):
+                    raise RuntimeError(f"rollback {kind} verification failed")
 
 
 class CatalogActivatingAdapter(PoolAdapter):
@@ -215,16 +233,35 @@ class PoolOrchestrator:
         return [self.adapters[pool].prepare_add(model, io=io) for pool in pools]
 
     def commit(self, changes: Sequence[PreparedChange], *, io: AdapterIO) -> list[AppliedChange]:
+        # Pool adapters stage underlying state only.  The fleet catalog is a
+        # single activation point after every pool succeeds.
+        before = io.catalog_bytes()
         applied: list[AppliedChange] = []
         try:
             for change in changes:
                 applied.append(self.adapters[change.pool].commit(change, io=io))
-        except Exception:
+            import yaml
+            raw = yaml.safe_load(before.decode())
+            for change in changes:
+                provider = raw.get("providers", {}).get(change.pool)
+                if not isinstance(provider, dict) or not isinstance(provider.get("models"), list):
+                    raise RuntimeError(f"fleet catalog lacks {change.pool} models list")
+                if change.model not in provider["models"]: provider["models"].append(change.model)
+            io.write_catalog_bytes(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode())
+        except Exception as exc:
+            failures = []
             for item in reversed(applied):
-                self.adapters[item.prepared.pool].rollback(item, io=io)
+                try: self.adapters[item.prepared.pool].rollback(item, io=io)
+                except Exception as rollback_exc: failures.append(f"{item.prepared.pool}: {rollback_exc}")
+            try: io.write_catalog_bytes(before)
+            except Exception as rollback_exc: failures.append(f"catalog: {rollback_exc}")
+            if failures: raise RuntimeError(f"commit failed: {exc}; compensation failures: {failures}") from exc
             raise
         return applied
 
     def rollback(self, changes: Sequence[AppliedChange], *, io: AdapterIO) -> None:
+        failures = []
         for item in reversed(changes):
-            self.adapters[item.prepared.pool].rollback(item, io=io)
+            try: self.adapters[item.prepared.pool].rollback(item, io=io)
+            except Exception as exc: failures.append(f"{item.prepared.pool}: {exc}")
+        if failures: raise RuntimeError(f"rollback failures: {failures}")

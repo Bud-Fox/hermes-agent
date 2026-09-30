@@ -56,6 +56,21 @@ def test_missing_catalog_is_passive(fleet_root):
     assert apply_fleet_catalog(config) == config
 
 
+@pytest.mark.parametrize("legacy", [
+    {"contabo_models": ["old"]},
+    {"provider_meta": {"old": {}}},
+])
+def test_recognized_legacy_catalog_is_passive(fleet_root, legacy):
+    (fleet_root / "catalog.shared.yaml").write_text(yaml.safe_dump(legacy), encoding="utf-8")
+    assert load_fleet_catalog() is None
+
+
+def test_explicit_v1_malformed_catalog_fails(fleet_root):
+    (fleet_root / "catalog.shared.yaml").write_text("version: 1\nproviders: nope\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="providers must be a mapping"):
+        load_fleet_catalog()
+
+
 def test_canonical_profile_discovery_has_no_fixed_roster(fleet_root):
     (fleet_root / "config.yaml").write_text("model: default\n", encoding="utf-8")
     profiles = fleet_root / "profiles"

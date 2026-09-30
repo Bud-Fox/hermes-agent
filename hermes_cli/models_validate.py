@@ -535,6 +535,19 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
 )
 
 
+def probe_openai_compatible_model(model: str, *, kind: str, provider: str,
+                                  timeout: float = 20.0) -> bool:
+    """Bounded OpenAI-compatible probe using the normal provider client boundary."""
+    from agent.auxiliary_client import get_text_auxiliary_client
+    client, _ = get_text_auxiliary_client("fleet_catalog_probe")
+    if client is None: return False
+    kwargs = {"model": model, "messages": [{"role": "user", "content": "Reply with OK."}],
+              "timeout": timeout, "stream": kind == "streaming"}
+    if kind == "tool": kwargs["tools"] = [{"type": "function", "function": {"name": "noop", "parameters": {"type": "object"}}}]
+    if kind == "reasoning": kwargs["reasoning_effort"] = "low"
+    return bool(client.chat.completions.create(**kwargs))
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],

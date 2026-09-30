@@ -59,12 +59,7 @@ def _validate_provider(provider_id: Any, value: Any) -> tuple[str, dict[str, Any
     return provider_id, copy.deepcopy(value)
 
 
-def load_fleet_catalog() -> FleetCatalog | None:
-    path = catalog_path()
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
+def validate_fleet_catalog_payload(raw: Any, path: Path) -> FleetCatalog:
     if not isinstance(raw, dict) or raw.get("version") != 1:
         raise ValueError(f"{path} must be a fleet catalog with version: 1")
     providers = raw.get("providers")
@@ -72,6 +67,20 @@ def load_fleet_catalog() -> FleetCatalog | None:
         raise ValueError(f"{path} providers must be a mapping")
     validated = dict(_validate_provider(key, value) for key, value in providers.items())
     return FleetCatalog(version=1, providers=validated, path=path)
+
+
+def load_fleet_catalog() -> FleetCatalog | None:
+    path = catalog_path()
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    # Pre-v1 machine files used these keys.  They are not fleet authority and
+    # must remain passive until an explicit v1 migration activates a catalog.
+    if isinstance(raw, dict) and "version" not in raw and (
+            "contabo_models" in raw or "provider_meta" in raw):
+        return None
+    return validate_fleet_catalog_payload(raw, path)
 
 
 def apply_fleet_catalog(config: dict) -> dict:

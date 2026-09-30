@@ -11,6 +11,21 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def probe_codex_model(model: str, *, kind: str, timeout: float = 20.0) -> bool:
+    """Bounded production probe through the existing Codex Responses client.
+
+    Kept as a narrow helper boundary so transaction tests patch it without
+    exposing tokens or replacing AdapterIO wholesale.
+    """
+    from agent.auxiliary_client import get_text_auxiliary_client
+    client, _ = get_text_auxiliary_client("fleet_catalog_probe")
+    if client is None: return False
+    kwargs = {"model": model, "messages": [{"role": "user", "content": "Reply with OK."}],
+              "timeout": timeout, "stream": kind == "streaming"}
+    if kind == "tool": kwargs["tools"] = [{"type": "function", "function": {"name": "noop", "parameters": {"type": "object"}}}]
+    return bool(client.chat.completions.create(**kwargs))
+
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
 # OAuth backend actually accepts: the public API's "-pro" variants and the retired
 # gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini return HTTP 400 there ("not supported

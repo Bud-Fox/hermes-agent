@@ -83,15 +83,22 @@ def test_codex_rejects_unsupported_or_failed_canary(failed):
 def test_contabo_prepare_runs_all_probes_and_commit_allowlisted_deploy(tmp_path):
     root = tmp_path / "contabo-router"
     io = FakeIO()
-    io.files[str(root / "app/models.json")] = {"models": ["old"]}
+    io.files[str(root / "app/models.json")] = {
+        "openai": {"models": [{"id": "old", "name": "Old", "supports_tools": True}]},
+        "anthropic": {"models": [{"id": "keep"}]},
+    }
     adapter = ContaboOpenAIAdapter(router_root=root, deploy_script=root / "deploy_router.sh")
     prepared = adapter.prepare_add("New/Model.X", io=io)
     assert prepared.metadata["probes"] == ["text", "tool", "streaming", "reasoning"]
     applied = adapter.commit(prepared, io=io)
-    assert io.files[str(root / "app/models.json")]["models"] == ["old", "New/Model.X"]
+    entries = io.files[str(root / "app/models.json")]["openai"]["models"]
+    assert entries[-1] == {"id": "New/Model.X", "name": "New/Model.X", "supports_tools": True}
+    assert io.files[str(root / "app/models.json")]["anthropic"] == {"models": [{"id": "keep"}]}
     assert io.commands[-1][0] == (str(root / "deploy_router.sh"),)
     adapter.rollback(applied, io=io)
-    assert io.files[str(root / "app/models.json")]["models"] == ["old"]
+    assert io.files[str(root / "app/models.json")]["openai"]["models"] == [
+        {"id": "old", "name": "Old", "supports_tools": True}]
+    assert io.commands[-1][0] == (str(root / "deploy_router.sh"),)
 
 
 def test_contabo_rejects_any_other_deploy_script(tmp_path):
