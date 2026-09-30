@@ -2267,7 +2267,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
             env_snapshot = cached[9] if len(cached) > 9 else {}
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[8]) if want_deepcopy else cached[8]
+                from hermes_cli.fleet_catalog import apply_fleet_catalog
+                authoritative = apply_fleet_catalog(cached[8])
+                return copy.deepcopy(authoritative) if want_deepcopy else authoritative
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -2308,11 +2310,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
             # Readonly path returns the same object later calls will see (identity invariant).
             if not want_deepcopy:
-                return cached_copy
+                from hermes_cli.fleet_catalog import apply_fleet_catalog
+                return apply_fleet_catalog(cached_copy)
         else:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
         # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
-        return expanded
+        from hermes_cli.fleet_catalog import apply_fleet_catalog
+        return apply_fleet_catalog(expanded)
 
 
 _SECURITY_COMMENT = """

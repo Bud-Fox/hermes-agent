@@ -94,6 +94,11 @@ def build_models_payload(
         excluded_providers=ctx.excluded_providers or [],
     )
 
+    from hermes_cli.fleet_catalog import provider_allowlist
+    allowlist = provider_allowlist()
+    if allowlist is not None:
+        rows = [row for row in rows if str(row.get("provider_id") or row.get("slug") or "") in allowlist]
+
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
     # list_authenticated_providers can't know about them (no credential — reachability is the
     # credential), so inject the row here where every picker surface inherits it.
