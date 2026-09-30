@@ -227,11 +227,14 @@ describe('ModelPickerDialog readiness overlay', () => {
         { slug: 'beta', name: 'Beta', models: ['two'], glyph: '○', readiness: 'depleted' }
       ]
     }
-    const reordered: ModelOptionsResult = {
+    const firstOverlay: ModelOptionsResult = {
       providers: [
-        { slug: 'beta', name: 'Beta', models: ['two'], glyph: '●', readiness: 'ready' },
-        { slug: 'alpha', name: 'Alpha', models: ['one'], glyph: '○', readiness: 'depleted' }
+        { slug: 'beta', name: 'Beta fresh', models: ['two'], glyph: '●', readiness: 'ready' },
+        { slug: 'alpha', name: 'Alpha fresh', models: ['one'], glyph: '○', readiness: 'depleted' }
       ]
+    }
+    const secondOverlay: ModelOptionsResult = {
+      providers: [{ slug: 'beta', name: 'Beta newest', models: ['three'], glyph: '○', readiness: 'depleted' }]
     }
     vi.mocked(requestModelOptions).mockResolvedValue(first)
     const props = {
@@ -252,17 +255,31 @@ describe('ModelPickerDialog readiness overlay', () => {
     const one = screen.getByText('one').closest('[cmdk-item]') as HTMLElement
     const two = screen.getByText('two').closest('[cmdk-item]') as HTMLElement
 
+    const list = screen.getByRole('listbox')
+    Object.defineProperty(list, 'scrollTop', { configurable: true, value: 73, writable: true })
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' })
     await waitFor(() => expect(two.getAttribute('aria-selected')).toBe('true'))
     const focused = document.activeElement
-    act(() => client.setQueryData(key, reordered))
+    act(() => client.setQueryData(key, firstOverlay))
 
     expect(screen.getAllByRole('option')).toEqual([one, two])
     expect(screen.getByText('one').closest('[cmdk-item]')).toBe(one)
     expect(screen.getByText('two').closest('[cmdk-item]')).toBe(two)
     expect(two.getAttribute('aria-selected')).toBe('true')
     expect(document.activeElement).toBe(focused)
+    expect(list.scrollTop).toBe(73)
     await waitFor(() => expect(screen.getAllByRole('img', { hidden: true })[0]?.textContent).toBe('○'))
+
+    act(() => client.setQueryData(key, secondOverlay))
+
+    expect(screen.getAllByRole('option')).toEqual([one, two])
+    expect(screen.getByText('one').closest('[cmdk-item]')).toBe(one)
+    expect(screen.getByText('two').closest('[cmdk-item]')).toBe(two)
+    expect(screen.queryByText('three')).toBeNull()
+    expect(screen.getByText('Alpha').closest('[cmdk-group]')).not.toBeNull()
+    expect(two.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(focused)
+    expect(list.scrollTop).toBe(73)
 
     view.rerender(
       <QueryClientProvider client={client}>
@@ -279,7 +296,7 @@ describe('ModelPickerDialog readiness overlay', () => {
       </QueryClientProvider>
     )
 
-    await waitFor(() => expect(screen.getAllByRole('option').map(row => row.textContent)).toEqual(['two', 'one']))
+    await waitFor(() => expect(screen.getAllByRole('option').map(row => row.textContent)).toEqual(['three']))
   })
 
   it('defaults the initial cursor to the preferred ready-1M model', async () => {

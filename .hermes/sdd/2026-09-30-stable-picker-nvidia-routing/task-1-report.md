@@ -2,9 +2,9 @@
 
 ## Outcome
 
-Implemented the Desktop model-picker open-session snapshot. While open, provider/model rows retain their captured `provider::model` ordering and React DOM identity; fresh catalog data overlays readiness/glyph metadata onto those rows. Closing and reopening applies the staged catalog order. The selected row and focused command input remain undisturbed.
+Implemented the Desktop model-picker open-session snapshot. While open, provider/model rows retain captured identity, order, and static fields even when later catalog payloads omit them; fresh payloads overlay only readiness/glyph metadata where available. Additions, removals, and reordering appear after close/reopen. Two sequential overlay ticks preserve the selected row, focused command input, and list scroll position.
 
-Static `model.options` queries now use `staleTime: Infinity` and `refetchOnWindowFocus: false`. Existing explicit refetch/invalidation paths remain unchanged.
+Static `model.options` queries now use `staleTime: Infinity`. `refetchOnWindowFocus: false` is also explicit locally (it was already the global default). Existing explicit refetch/invalidation paths remain unchanged.
 
 ## RED evidence
 
@@ -14,7 +14,7 @@ Command:
 cd apps/desktop && npx vitest run --project ui src/components/model-picker.test.tsx
 ```
 
-Before implementation: 1 failed, 13 passed. The new stable-overlay test showed the selected row changed during a live reorder (`expected aria-selected true, received false`).
+Before the review fix: 1 failed, 13 passed. The expanded stable-overlay test's second tick omitted the captured Alpha provider; its row disappeared, proving the open snapshot was reconstructed incorrectly from only the latest payload.
 
 ## GREEN evidence
 

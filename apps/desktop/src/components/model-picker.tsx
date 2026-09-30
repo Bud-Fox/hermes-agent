@@ -151,41 +151,27 @@ export function ModelPickerDialog({
   }, [open, refetchOptions])
 
   const providers = modelOptions.data?.providers ?? []
-  const openOrderRef = useRef<readonly string[]>([])
+  const openSnapshotRef = useRef<readonly ModelOptionProvider[]>([])
 
   if (!open) {
-    openOrderRef.current = []
-  } else if (openOrderRef.current.length === 0 && providers.length > 0) {
-    openOrderRef.current = providers.flatMap(provider =>
-      (provider.models ?? []).map(model => pickerItemValue(provider.slug, model))
-    )
+    openSnapshotRef.current = []
+  } else if (openSnapshotRef.current.length === 0 && providers.length > 0) {
+    openSnapshotRef.current = providers
   }
 
   const displayedProviders = useMemo(() => {
-    if (!open || openOrderRef.current.length === 0) {
+    if (!open || openSnapshotRef.current.length === 0) {
       return providers
     }
 
-    const providersBySlug = new Map(providers.map(provider => [provider.slug, provider]))
-    const modelsBySlug = new Map<string, string[]>()
+    const freshProvidersBySlug = new Map(providers.map(provider => [provider.slug, provider]))
 
-    for (const id of openOrderRef.current) {
-      const separator = id.indexOf(':')
-      const slug = id.slice(0, separator)
-      const model = id.slice(separator + 1)
+    return openSnapshotRef.current.map(snapshotProvider => {
+      const freshProvider = freshProvidersBySlug.get(snapshotProvider.slug)
 
-      if (providersBySlug.get(slug)?.models?.includes(model)) {
-        const models = modelsBySlug.get(slug) ?? []
-
-        models.push(model)
-        modelsBySlug.set(slug, models)
-      }
-    }
-
-    return [...modelsBySlug].flatMap(([slug, models]) => {
-      const provider = providersBySlug.get(slug)
-
-      return provider ? [{ ...provider, models }] : []
+      return freshProvider
+        ? { ...snapshotProvider, glyph: freshProvider.glyph, readiness: freshProvider.readiness }
+        : snapshotProvider
     })
   }, [open, providers])
 
