@@ -5,7 +5,26 @@ from hermes_cli.codex_models import (
     DEFAULT_CODEX_MODELS,
     _FORWARD_COMPAT_TEMPLATE_MODELS,
     get_codex_model_ids,
+    probe_codex_model,
 )
+
+
+class _ProbeTransport:
+    def __init__(self, events): self.events = events
+    def stream(self, **_kwargs): return iter(self.events)
+
+
+def test_codex_probe_requires_valid_text_completed_stream_and_real_tool_call():
+    text = _ProbeTransport([{"type": "response.output_text.delta", "delta": "OK"}, {"type": "response.completed"}])
+    assert probe_codex_model("literal", kind="text", transport=text) is True
+    assert probe_codex_model("literal", kind="streaming", transport=text) is True
+    no_text = _ProbeTransport([{"type": "response.completed"}])
+    assert probe_codex_model("literal", kind="text", transport=no_text) is False
+    incomplete = _ProbeTransport([{"type": "response.output_text.delta", "delta": "OK"}])
+    assert probe_codex_model("literal", kind="streaming", transport=incomplete) is False
+    tool = _ProbeTransport([{"type": "response.output_item.added", "item": {"type": "function_call", "name": "noop"}}, {"type": "response.completed"}])
+    assert probe_codex_model("literal", kind="tool", transport=tool) is True
+    assert probe_codex_model("literal", kind="tool", transport=text) is False
 
 
 CHATGPT_REJECTED_CODEX_PRO_SLUGS = {

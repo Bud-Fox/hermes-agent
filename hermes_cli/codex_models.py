@@ -12,19 +12,52 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 
-def probe_codex_model(model: str, *, kind: str, timeout: float = 20.0) -> bool:
-    """Bounded production probe through the existing Codex Responses client.
+def probe_codex_model(model: str, *, kind: str, timeout: float = 20.0, transport=None) -> bool:
+    """Probe via the account-scoped Codex Responses event transport.
 
-    Kept as a narrow helper boundary so transaction tests patch it without
-    exposing tokens or replacing AdapterIO wholesale.
+    ``transport`` is the narrow mock boundary; production resolves the existing
+    authenticated Codex Responses client rather than a generic auxiliary client.
     """
-    from agent.auxiliary_client import get_text_auxiliary_client
-    client, _ = get_text_auxiliary_client("fleet_catalog_probe")
-    if client is None: return False
-    kwargs = {"model": model, "messages": [{"role": "user", "content": "Reply with OK."}],
-              "timeout": timeout, "stream": kind == "streaming"}
-    if kind == "tool": kwargs["tools"] = [{"type": "function", "function": {"name": "noop", "parameters": {"type": "object"}}}]
-    return bool(client.chat.completions.create(**kwargs))
+    if transport is None:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+        from agent.codex_headers import CODEX_AUX_BASE_URL, codex_cloudflare_headers
+        from openai import OpenAI
+        credentials = resolve_codex_runtime_credentials()
+        if not credentials or not credentials.get("api_key"):
+            return False
+        token = credentials["api_key"]
+        kwargs = {"api_key": token, "base_url": CODEX_AUX_BASE_URL,
+                  "default_headers": codex_cloudflare_headers(token, base_url=CODEX_AUX_BASE_URL)}
+        client = OpenAI(**kwargs)
+        transport = client.responses
+
+    request = {"model": model, "input": "Reply with the non-empty text OK.", "stream": True}
+    if kind == "tool":
+        request.update({"input": "Call the noop tool exactly once.", "tools": [{"type": "function", "name": "noop", "description": "No operation", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}], "tool_choice": {"type": "function", "name": "noop"}})
+    stream = transport.stream(**request) if hasattr(transport, "stream") else transport.create(**request)
+    if hasattr(stream, "__enter__"):
+        with stream as events:
+            return _validate_probe_events(events, kind)
+    return _validate_probe_events(stream, kind)
+
+
+def _validate_probe_events(stream, kind: str) -> bool:
+    text = []
+    completed = False
+    tool_called = False
+    for event in stream:
+        raw = event if isinstance(event, dict) else event.model_dump()
+        event_type = raw.get("type")
+        if event_type == "response.output_text.delta" and isinstance(raw.get("delta"), str):
+            text.append(raw["delta"])
+        if event_type in {"response.output_item.added", "response.output_item.done"}:
+            item = raw.get("item") or {}
+            tool_called = tool_called or item.get("type") == "function_call"
+        completed = completed or event_type == "response.completed"
+    if kind == "tool": return completed and tool_called
+    if kind == "streaming": return completed and bool("".join(text).strip())
+    if kind == "text": return completed and bool("".join(text).strip())
+    return False
 
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
 # OAuth backend actually accepts: the public API's "-pro" variants and the retired

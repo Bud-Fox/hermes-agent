@@ -134,8 +134,21 @@ def _verify(path: Path, record: dict[str, Any]) -> None:
         raise RuntimeError(f"rollback verification failed for {path}")
 
 
-def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], None] = lambda: None,
-                       read_model_options: Callable[[Path], Any] = lambda _p: None) -> Receipt:
+def _invalidate_model_caches() -> None:
+    from hermes_cli.models import clear_provider_models_cache
+    clear_provider_models_cache()
+
+
+def _read_effective_profile(path: Path) -> dict[str, Any]:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if raw is None: raw = {}
+    if not isinstance(raw, dict): raise ValueError(f"{path} top level must be a mapping")
+    from hermes_cli.fleet_catalog import apply_fleet_catalog
+    return apply_fleet_catalog(raw)
+
+
+def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], None] = _invalidate_model_caches,
+                       read_model_options: Callable[[Path], Any] = _read_effective_profile) -> Receipt:
     bundle, manifest, receipt = _load_bundle(transaction_id)
     if receipt["status"] == "committed": return Receipt(transaction_id, "committed", bundle)
     if receipt["status"] != "prepared": raise ValueError(f"transaction {transaction_id} is {receipt['status']}")
@@ -149,7 +162,20 @@ def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], N
         cat = manifest["catalog"]
         _atomic_write_bytes(catalog_path(), staged, int(cat["mode"] or 0o600))
         invalidate_caches()
-        for record in manifest["files"]: read_model_options(Path(record["path"]))
+        effective = [read_model_options(Path(record["path"])) for record in manifest["files"]]
+        expected = json.loads((bundle / "hashes.after.json").read_text())
+        actual = {r["path"]: _sha(Path(r["path"]).read_bytes()) for r in manifest["files"]}
+        actual[str(catalog_path())] = _sha(catalog_path().read_bytes())
+        modes_match = all(stat.S_IMODE(Path(r["path"]).stat().st_mode) == int(r["mode"] or 0o600) for r in manifest["files"])
+        from hermes_cli.fleet_catalog import static_catalog_hash
+        hashes = [static_catalog_hash(cfg) for cfg in effective]
+        verification = {"all_expected_hashes_match": actual == expected,
+                        "all_expected_modes_match": modes_match,
+                        "all_profile_static_hashes_equal": len(set(hashes)) <= 1,
+                        "actual_hashes": actual, "profile_static_hashes": hashes}
+        _write_json(bundle / "verification.json", verification)
+        if not all(verification[key] for key in ("all_expected_hashes_match", "all_expected_modes_match", "all_profile_static_hashes_equal")):
+            raise RuntimeError("post-commit fleet catalog verification failed")
     except Exception as exc:
         failures = []
         for record in reversed([*changed, manifest["catalog"]]):
@@ -173,8 +199,8 @@ def _last_committed_id() -> str | None:
     return max(ids) if ids else None
 
 
-def rollback_transaction(transaction_id: str = "last", *, invalidate_caches: Callable[[], None] = lambda: None,
-                         read_model_options: Callable[[Path], Any] = lambda _p: None) -> Receipt:
+def rollback_transaction(transaction_id: str = "last", *, invalidate_caches: Callable[[], None] = _invalidate_model_caches,
+                         read_model_options: Callable[[Path], Any] = _read_effective_profile) -> Receipt:
     if transaction_id == "last":
         transaction_id = _last_committed_id() or ""
         if not transaction_id: return Receipt("last", "already_rolled_back", _transactions_root())

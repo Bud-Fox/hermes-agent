@@ -18,6 +18,7 @@ class FakeIO(AdapterIO):
         self.commands = []
         self.files = {}
         self.catalog = b"version: 1\nproviders:\n  openai-codex:\n    models: []\n"
+        self.catalog_writes = 0
 
     def provider_model_ids(self, pool):
         return list(self.models)
@@ -41,7 +42,8 @@ class FakeIO(AdapterIO):
     def catalog_bytes(self):
         return self.catalog
 
-    def write_catalog_bytes(self, value):
+    def write_catalog_bytes(self, value, mode=None):
+        self.catalog_writes += 1
         self.catalog = value
 
 
@@ -61,16 +63,17 @@ def test_codex_listing_absence_uses_direct_streaming_and_canaries():
     assert all(model == "gpt-HIDDEN.X" for model, _ in seen)
 
 
-def test_codex_commit_updates_fleet_catalog_and_rolls_back():
+def test_codex_commit_only_mutates_pool_owned_state():
     original = b"version: 1\nproviders:\n  openai-codex:\n    models: [old]\n"
     io = FakeIO()
     io.catalog = original
     adapter = CodexPoolAdapter()
     change = PreparedChange("openai-codex", "Literal/X", {})
     applied = adapter.commit(change, io=io)
-    assert b"Literal/X" in io.catalog
+    assert io.catalog == original
     adapter.rollback(applied, io=io)
     assert io.catalog == original
+    assert io.catalog_writes == 0
 
 
 @pytest.mark.parametrize("failed", ["streaming", "text", "tool"])
@@ -93,6 +96,7 @@ def test_contabo_prepare_runs_all_probes_and_commit_allowlisted_deploy(tmp_path)
     applied = adapter.commit(prepared, io=io)
     entries = io.files[str(root / "app/models.json")]["openai"]["models"]
     assert entries[-1] == {"id": "New/Model.X", "name": "New/Model.X", "supports_tools": True}
+    assert set(entries[-1]) == {"id", "name", "supports_tools"}
     assert io.files[str(root / "app/models.json")]["anthropic"] == {"models": [{"id": "keep"}]}
     assert io.commands[-1][0] == (str(root / "deploy_router.sh"),)
     adapter.rollback(applied, io=io)
@@ -138,3 +142,16 @@ def test_orchestrator_compensates_reverse_order_on_partial_failure():
     with pytest.raises(RuntimeError, match="boom"):
         PoolOrchestrator(adapters).commit(prepared, io=FakeIO())
     assert events[-2:] == ["rollback:b", "rollback:a"]
+
+
+def test_orchestrator_is_single_catalog_writer_and_writes_last():
+    events = []
+    io = FakeIO()
+    io.catalog = b"version: 1\nproviders:\n  a:\n    models: []\n  b:\n    models: []\n"
+    real_write = io.write_catalog_bytes
+    io.write_catalog_bytes = lambda value, mode=None: (events.append("catalog"), real_write(value, mode))[1]
+    adapters = {name: RecordingAdapter(name, events) for name in ("a", "b")}
+    changes = PoolOrchestrator(adapters).prepare("literal", ["a", "b"], io=io)
+    PoolOrchestrator(adapters).commit(changes, io=io)
+    assert events[-3:] == ["commit:a", "commit:b", "catalog"]
+    assert io.catalog_writes == 1

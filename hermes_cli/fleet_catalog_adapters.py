@@ -99,22 +99,12 @@ class CodexPoolAdapter(PoolAdapter):
         return PreparedChange(self.pool, model, {"availability": availability, "support_table_patch": False})
 
     def commit(self, change: PreparedChange, *, io: AdapterIO) -> AppliedChange:
-        import yaml
-
-        before = io.catalog_bytes()
-        raw = yaml.safe_load(before.decode("utf-8"))
-        provider = raw.get("providers", {}).get(self.pool)
-        if not isinstance(provider, dict) or not isinstance(provider.get("models"), list):
-            raise RuntimeError("fleet catalog lacks openai-codex models list")
-        if change.model not in provider["models"]:
-            provider["models"].append(change.model)
-            io.write_catalog_bytes(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode())
-        return AppliedChange(change, {"catalog_before_hex": before.hex()})
+        # Codex has no mutable pool-local manifest. Catalog activation is owned
+        # exclusively by PoolOrchestrator after every pool commit succeeds.
+        return AppliedChange(change, {})
 
     def rollback(self, applied: AppliedChange, *, io: AdapterIO) -> None:
-        before = applied.rollback_data.get("catalog_before_hex")
-        if before:
-            io.write_catalog_bytes(bytes.fromhex(before))
+        return None
 
 
 class ContaboOpenAIAdapter(PoolAdapter):
@@ -157,10 +147,14 @@ class ContaboOpenAIAdapter(PoolAdapter):
         after = copy.deepcopy(before)
         models = self._model_list(after)
         if not any(item.get("id") == change.model for item in models):
-            template = copy.deepcopy(models[0]) if models else {"id": change.model, "name": change.model}
-            template["id"] = change.model
-            if "name" in template: template["name"] = change.model
-            models.append(template)
+            metadata = change.metadata.get("model_entry") if isinstance(change.metadata, dict) else None
+            entry = {"id": change.model, "name": change.model}
+            if isinstance(metadata, dict):
+                for key in ("supports_tools", "supports_streaming", "supports_reasoning"):
+                    if isinstance(metadata.get(key), bool): entry[key] = metadata[key]
+            elif models and isinstance(models[0].get("supports_tools"), bool):
+                entry["supports_tools"] = bool(models[0]["supports_tools"])
+            models.append(entry)
         io.write_json(self.models_path, after)
         try:
             self._run_checked(io, ("python", "-m", "pytest", "-q", "tests"), 120)
@@ -187,37 +181,6 @@ class ContaboOpenAIAdapter(PoolAdapter):
                     raise RuntimeError(f"rollback {kind} verification failed")
 
 
-class CatalogActivatingAdapter(PoolAdapter):
-    """Activate a prepared pool's fleet row last, after its underlying adapter succeeds."""
-
-    def __init__(self, inner: PoolAdapter):
-        self.inner = inner
-        self.pool = inner.pool
-
-    def prepare_add(self, model: str, *, io: AdapterIO) -> PreparedChange:
-        return self.inner.prepare_add(model, io=io)
-
-    def commit(self, change: PreparedChange, *, io: AdapterIO) -> AppliedChange:
-        underlying = self.inner.commit(change, io=io)
-        before = io.catalog_bytes()
-        import yaml
-        raw = yaml.safe_load(before.decode("utf-8"))
-        provider = raw.get("providers", {}).get(self.pool)
-        if not isinstance(provider, dict) or not isinstance(provider.get("models"), list):
-            self.inner.rollback(underlying, io=io)
-            raise RuntimeError(f"fleet catalog lacks {self.pool} models list")
-        if change.model not in provider["models"]:
-            provider["models"].append(change.model)
-            io.write_catalog_bytes(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode())
-        return AppliedChange(change, {"underlying": underlying.rollback_data, "catalog_before_hex": before.hex()})
-
-    def rollback(self, applied: AppliedChange, *, io: AdapterIO) -> None:
-        before = applied.rollback_data.get("catalog_before_hex")
-        if before:
-            io.write_catalog_bytes(bytes.fromhex(before))
-        self.inner.rollback(AppliedChange(applied.prepared, applied.rollback_data.get("underlying", {})), io=io)
-
-
 class PoolOrchestrator:
     def __init__(self, adapters: Mapping[str, PoolAdapter]):
         self.adapters = dict(adapters)
@@ -240,14 +203,7 @@ class PoolOrchestrator:
         try:
             for change in changes:
                 applied.append(self.adapters[change.pool].commit(change, io=io))
-            import yaml
-            raw = yaml.safe_load(before.decode())
-            for change in changes:
-                provider = raw.get("providers", {}).get(change.pool)
-                if not isinstance(provider, dict) or not isinstance(provider.get("models"), list):
-                    raise RuntimeError(f"fleet catalog lacks {change.pool} models list")
-                if change.model not in provider["models"]: provider["models"].append(change.model)
-            io.write_catalog_bytes(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode())
+            self.activate_catalog(changes, io=io, snapshot=before)
         except Exception as exc:
             failures = []
             for item in reversed(applied):
@@ -258,6 +214,21 @@ class PoolOrchestrator:
             if failures: raise RuntimeError(f"commit failed: {exc}; compensation failures: {failures}") from exc
             raise
         return applied
+
+    def commit_one(self, change: PreparedChange, *, io: AdapterIO) -> AppliedChange:
+        return self.adapters[change.pool].commit(change, io=io)
+
+    def activate_catalog(self, changes: Sequence[PreparedChange], *, io: AdapterIO,
+                         snapshot: bytes | None = None) -> None:
+        import yaml
+        before = io.catalog_bytes() if snapshot is None else snapshot
+        raw = yaml.safe_load(before.decode())
+        for change in changes:
+            provider = raw.get("providers", {}).get(change.pool)
+            if not isinstance(provider, dict) or not isinstance(provider.get("models"), list):
+                raise RuntimeError(f"fleet catalog lacks {change.pool} models list")
+            if change.model not in provider["models"]: provider["models"].append(change.model)
+        io.write_catalog_bytes(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True).encode())
 
     def rollback(self, changes: Sequence[AppliedChange], *, io: AdapterIO) -> None:
         failures = []

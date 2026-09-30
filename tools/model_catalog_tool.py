@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli.fleet_catalog_adapters import (
-    AdapterIO, AppliedChange, CatalogActivatingAdapter, CodexPoolAdapter, ContaboOpenAIAdapter,
+    AdapterIO, AppliedChange, CodexPoolAdapter, ContaboOpenAIAdapter,
     PoolOrchestrator, PreparedChange,
 )
 
@@ -55,7 +55,7 @@ def _redact(value: Any) -> Any:
 
 
 def _build_orchestrator() -> PoolOrchestrator:
-    adapters = [CodexPoolAdapter(), CatalogActivatingAdapter(ContaboOpenAIAdapter())]
+    adapters = [CodexPoolAdapter(), ContaboOpenAIAdapter()]
     return PoolOrchestrator({adapter.pool: adapter for adapter in adapters})
 
 
@@ -98,6 +98,19 @@ def _applied(plan: dict[str, Any]) -> list[AppliedChange]:
     return [AppliedChange(prepared[item["pool"]], item.get("rollback_data", {})) for item in plan.get("applied", [])]
 
 
+def _journal_applied(bundle: Path, plan: dict[str, Any]) -> list[AppliedChange]:
+    path = bundle / "journal.json"
+    if not path.is_file(): return []
+    journal = json.loads(path.read_text(encoding="utf-8"))
+    prepared = {item.pool: item for item in _prepared(plan)}
+    out = []
+    for step in journal.get("steps", []):
+        if step.get("state") != "applied": continue
+        rollback = json.loads((bundle / step["rollback_snapshot"]).read_text(encoding="utf-8"))
+        out.append(AppliedChange(prepared[step["pool"]], rollback))
+    return out
+
+
 def model_catalog(action: str, model: str | None = None, pools: list[str] | None = None,
                   transaction_id: str = "last", *, io: AdapterIO | None = None,
                   require_approval: bool = True) -> str:
@@ -131,15 +144,39 @@ def model_catalog(action: str, model: str | None = None, pools: list[str] | None
                 return json.dumps(_redact(plan), ensure_ascii=False)
             if plan["status"] != "prepared":
                 raise ValueError(f"transaction is {plan['status']}")
-            applied = orchestrator.commit(_prepared(plan), io=io)
-            plan["applied"] = [{"pool": item.prepared.pool, "rollback_data": _redact(item.rollback_data)} for item in applied]
+            changes = _prepared(plan)
+            snapshot = io.catalog_bytes()
+            from hermes_cli.fleet_catalog_transactions import _atomic_write_bytes
+            _atomic_write_bytes(bundle / "catalog.before", snapshot, 0o600)
+            journal = {"version": 1, "catalog_snapshot": "catalog.before", "steps": []}
+            _atomic_json(bundle / "journal.json", journal)
+            plan["status"] = "applying"
+            _atomic_json(bundle / "plan.json", plan)
+            applied = []
+            for index, change in enumerate(changes):
+                step = {"pool": change.pool, "state": "applying"}
+                journal["steps"].append(step); _atomic_json(bundle / "journal.json", journal)
+                item = orchestrator.commit_one(change, io=io)
+                rollback_name = f"rollback-{index:04d}.json"
+                _atomic_json(bundle / rollback_name, item.rollback_data)
+                step.update({"state": "applied", "rollback_snapshot": rollback_name})
+                _atomic_json(bundle / "journal.json", journal)
+                applied.append(item)
+            orchestrator.activate_catalog(changes, io=io, snapshot=snapshot)
+            journal["catalog_state"] = "applied"; _atomic_json(bundle / "journal.json", journal)
+            plan["applied_pools"] = [item.prepared.pool for item in applied]
             plan["status"] = "committed"
         else:
             if plan["status"] == "rolled_back":
                 return json.dumps({"success": True, "status": "already_rolled_back", "transaction_id": plan["transaction_id"]})
-            if plan["status"] != "committed":
+            if plan["status"] not in {"committed", "applying"}:
                 raise ValueError(f"transaction is {plan['status']}")
-            orchestrator.rollback(_applied(plan), io=io)
+            orchestrator.rollback(_journal_applied(bundle, plan) or _applied(plan), io=io)
+            journal_path = bundle / "journal.json"
+            if journal_path.is_file():
+                journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                snapshot = bundle / journal.get("catalog_snapshot", "catalog.before")
+                if snapshot.is_file(): io.write_catalog_bytes(snapshot.read_bytes())
             plan["status"] = "rolled_back"
         _atomic_json(bundle / "plan.json", plan)
         return json.dumps(_redact(plan), ensure_ascii=False)

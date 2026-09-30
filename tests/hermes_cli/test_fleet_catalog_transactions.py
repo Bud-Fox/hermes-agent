@@ -76,3 +76,28 @@ def test_mid_commit_failure_compensates_all_files(fleet, monkeypatch):
     assert {p: p.read_bytes() for p in paths} == before
     receipt_path = fleet / "backups" / "fleet-catalog" / tx.transaction_id / "receipt.json"
     assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "compensated"
+
+
+def test_prepare_persists_mode_0600_catalog_snapshot_and_rollback_restores_it_once(fleet, monkeypatch):
+    from hermes_cli import fleet_catalog_transactions as transactions
+    original = (fleet / "catalog.shared.yaml").read_bytes()
+    tx = prepare_migration(original.replace(b"Exact/ID", b"New/ID"))
+    manifest = json.loads((tx.bundle_path / "manifest.json").read_text())
+    snapshot = tx.bundle_path / manifest["catalog"]["payload"]
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
+    commit_transaction(tx.transaction_id)
+    restores = []
+    real_restore = transactions._restore_one
+    monkeypatch.setattr(transactions, "_restore_one", lambda bundle, record: (restores.append(record["path"]), real_restore(bundle, record))[1])
+    rollback_transaction(tx.transaction_id)
+    assert (fleet / "catalog.shared.yaml").read_bytes() == original
+    assert restores.count(str(fleet / "catalog.shared.yaml")) == 1
+
+
+def test_commit_verifies_expected_hashes_modes_and_equal_profile_catalog_hashes(fleet):
+    tx = prepare_migration()
+    commit_transaction(tx.transaction_id)
+    verification = json.loads((tx.bundle_path / "verification.json").read_text())
+    assert verification["all_expected_hashes_match"] is True
+    assert verification["all_expected_modes_match"] is True
+    assert verification["all_profile_static_hashes_equal"] is True
