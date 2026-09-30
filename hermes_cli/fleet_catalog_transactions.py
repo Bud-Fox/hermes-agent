@@ -140,29 +140,40 @@ def _invalidate_model_caches() -> None:
 
 
 def _read_effective_profile(path: Path) -> dict[str, Any]:
-    from hermes_cli.config_effective import load_user_config_effective
-    return load_user_config_effective(path, fail_closed=True)
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(path.parent)
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        return load_user_config_effective(path, fail_closed=True)
+    finally:
+        reset_hermes_home_override(token)
 
 
-def _picker_payload(config: dict[str, Any]) -> dict[str, Any]:
-    from hermes_cli.config import get_compatible_custom_providers, stringify_provider_map
-    from hermes_cli.inventory import ConfigContext, build_model_options_payload
-    model_cfg = config.get("model", {})
-    if isinstance(model_cfg, dict):
-        current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
-        current_provider = str(model_cfg.get("provider", "") or "")
-        current_base_url = str(model_cfg.get("base_url", "") or "")
-    else:
-        current_model, current_provider, current_base_url = str(model_cfg or ""), "", ""
-    excluded = config.get("model_catalog", {}).get("excluded_providers") or []
-    context = ConfigContext(
-        current_provider=current_provider, current_model=current_model,
-        current_base_url=current_base_url,
-        user_providers=stringify_provider_map(config.get("providers")),
-        custom_providers=get_compatible_custom_providers(config),
-        excluded_providers=excluded if isinstance(excluded, list) else [],
-    )
-    return build_model_options_payload(context, explicit_only=True)
+def _picker_payload(config: dict[str, Any], *, profile_home: Path | None = None) -> dict[str, Any]:
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(profile_home) if profile_home is not None else None
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, stringify_provider_map
+        from hermes_cli.inventory import ConfigContext, build_model_options_payload
+        model_cfg = config.get("model", {})
+        if isinstance(model_cfg, dict):
+            current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
+            current_provider = str(model_cfg.get("provider", "") or "")
+            current_base_url = str(model_cfg.get("base_url", "") or "")
+        else:
+            current_model, current_provider, current_base_url = str(model_cfg or ""), "", ""
+        excluded = config.get("model_catalog", {}).get("excluded_providers") or []
+        context = ConfigContext(
+            current_provider=current_provider, current_model=current_model,
+            current_base_url=current_base_url,
+            user_providers=stringify_provider_map(config.get("providers")),
+            custom_providers=get_compatible_custom_providers(config),
+            excluded_providers=excluded if isinstance(excluded, list) else [],
+        )
+        return build_model_options_payload(context, explicit_only=True)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
 
 
 def _picker_inventory(payload: dict[str, Any]) -> dict[str, list[str]]:
@@ -195,7 +206,8 @@ def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], N
         cat = manifest["catalog"]
         _atomic_write_bytes(catalog_path(), staged, int(cat["mode"] or 0o600))
         invalidate_caches()
-        effective = [read_model_options(Path(record["path"])) for record in manifest["files"]]
+        profile_paths = [Path(record["path"]) for record in manifest["files"]]
+        effective = [read_model_options(path) for path in profile_paths]
         expected = json.loads((bundle / "hashes.after.json").read_text())
         actual = {r["path"]: _sha(Path(r["path"]).read_bytes()) for r in manifest["files"]}
         actual[str(catalog_path())] = _sha(catalog_path().read_bytes())
@@ -203,7 +215,14 @@ def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], N
         from hermes_cli.fleet_catalog import apply_fleet_catalog, static_catalog_hash
         hashes = [static_catalog_hash(cfg) for cfg in effective]
         expected_catalog_hash = static_catalog_hash(apply_fleet_catalog({}))
-        picker_payloads = [_picker_payload(cfg) for cfg in effective]
+        picker_payloads = []
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        for cfg, path in zip(effective, profile_paths):
+            token = set_hermes_home_override(path.parent)
+            try:
+                picker_payloads.append(_picker_payload(cfg, profile_home=path.parent))
+            finally:
+                reset_hermes_home_override(token)
         picker_inventories = [_picker_inventory(payload) for payload in picker_payloads]
         expected_picker = _picker_inventory(_picker_payload(apply_fleet_catalog({})))
         picker_parity = (bool(picker_inventories)

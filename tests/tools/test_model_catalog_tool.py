@@ -89,6 +89,29 @@ def test_apply_journals_each_step_outside_plan_and_crash_is_recoverable(tmp_path
     assert rolled["status"] == "rolled_back"
 
 
+def test_apply_journal_recovers_step_interrupted_while_applying(tmp_path, monkeypatch):
+    fake = FakeOrchestrator()
+    monkeypatch.setattr(tool, "_plans_root", lambda: tmp_path)
+    monkeypatch.setattr(tool, "_build_orchestrator", lambda: fake)
+    plan = json.loads(tool.model_catalog("plan_add", "literal.id", ["contabo-openai"]))
+    txid = plan["transaction_id"]
+    fake.crash_after_commit = True
+    io = FakeIO(probe=lambda pool, model, kind: kind not in {"manifest", "models"})
+    models_path = "/Users/user/contabo-router/app/models.json"
+    io.files[models_path] = b'{"openai":{"models":[{"id":"old"}]}}'
+    io.file_modes[models_path] = 0o640
+
+    with pytest.raises(KeyboardInterrupt, match="simulated interrupt"):
+        tool.model_catalog("apply", transaction_id=txid, require_approval=False, io=io)
+    journal = json.loads((tmp_path / txid / "journal.json").read_text())
+    assert journal["steps"][0]["state"] == "applying"
+
+    fake.crash_after_commit = False
+    rolled = json.loads(tool.model_catalog("rollback", transaction_id=txid, require_approval=False, io=io))
+    assert rolled["status"] == "rolled_back"
+    assert fake.events[-1] == "rollback:contabo-openai"
+
+
 def test_apply_requires_approval_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(tool, "_plans_root", lambda: tmp_path)
     monkeypatch.setattr(tool, "_build_orchestrator", lambda: FakeOrchestrator())
@@ -103,6 +126,7 @@ class FakeOrchestrator:
         from hermes_cli.fleet_catalog_adapters import ContaboOpenAIAdapter
         self.events = []
         self.crash_after: int | None = None
+        self.crash_after_commit = False
         self.assert_precommit_payload = False
         self.bundle = None
         self.adapters = {
@@ -138,7 +162,11 @@ class FakeOrchestrator:
         if change.pool == "contabo-openai":
             data = {"models_before_mode": 0o640,
                     "models_before_bytes": b'{"openai":{"models":[{"id":"old"}]}}'}
-        return AppliedChange(change, data)
+        item = AppliedChange(change, data)
+        if self.crash_after_commit:
+            self.events.append(f"committed-before-interrupt:{change.pool}")
+            raise KeyboardInterrupt("simulated interrupt after commit")
+        return item
 
     def activate_catalog(self, changes, *, io, snapshot=None):
         self.events.append("catalog")

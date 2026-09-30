@@ -100,11 +100,20 @@ def _invalidate_and_verify_catalog() -> None:
     expected_config = apply_fleet_catalog({})
     expected = static_catalog_hash(expected_config)
     expected_picker = _picker_inventory(_picker_payload(expected_config))
-    readbacks = [config_effective.load_user_config_effective(path, fail_closed=True)
-                 for path in canonical_profile_config_paths()]
+    profile_paths = canonical_profile_config_paths()
+    readbacks = []
+    picker_inventories = []
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    for path in profile_paths:
+        token = set_hermes_home_override(path.parent)
+        try:
+            value = config_effective.load_user_config_effective(path, fail_closed=True)
+            readbacks.append(value)
+            picker_inventories.append(_picker_inventory(_picker_payload(value)))
+        finally:
+            reset_hermes_home_override(token)
     if not readbacks or any(static_catalog_hash(value) != expected for value in readbacks):
         raise RuntimeError("profile-scoped model-options inventory readback hash mismatch")
-    picker_inventories = [_picker_inventory(_picker_payload(value)) for value in readbacks]
     if any(value != expected_picker for value in picker_inventories):
         raise RuntimeError("profile-scoped picker provider/model inventory mismatch")
     if not _owner_route_parity(readbacks):
@@ -127,7 +136,7 @@ def _journal_applied(bundle: Path, plan: dict[str, Any]) -> list[AppliedChange]:
     prepared = {item.pool: item for item in _prepared(plan)}
     out = []
     for step in journal.get("steps", []):
-        if step.get("state") != "applied": continue
+        if step.get("state") not in {"applying", "applied"}: continue
         rollback = json.loads((bundle / step["rollback_snapshot"]).read_text(encoding="utf-8"))
         payload = step.get("rollback_payload")
         if payload:

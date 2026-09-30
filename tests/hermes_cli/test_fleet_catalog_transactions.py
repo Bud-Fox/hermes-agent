@@ -104,12 +104,13 @@ def test_commit_verifies_expected_hashes_modes_and_equal_profile_catalog_hashes(
 
 
 def test_commit_verifies_picker_payload_inventory_for_every_profile(fleet, monkeypatch):
+    from hermes_constants import get_hermes_home_override
     from hermes_cli import fleet_catalog_transactions as transactions
 
     seen = []
 
-    def build(config):
-        seen.append(config)
+    def build(config, *, profile_home=None):
+        seen.append((config, profile_home, get_hermes_home_override()))
         providers = config.get("providers", {})
         return {"providers": [
             {"provider_id": provider, "models": value.get("models", [])}
@@ -124,6 +125,33 @@ def test_commit_verifies_picker_payload_inventory_for_every_profile(fleet, monke
     assert verification["all_profile_picker_inventories_equal"] is True
     assert verification["all_profiles_owner_route_picker_equal"] is True
     assert len(seen) == 3  # two canonical profiles plus the All-profiles owner route
+    profile_calls = [item for item in seen if item[1] is not None]
+    assert [home for _, home, _ in profile_calls] == [
+        fleet,
+        fleet / "profiles" / "dynamic",
+    ]
+    assert [active for _, _, active in profile_calls] == [str(fleet), str(fleet / "profiles" / "dynamic")]
+
+
+def test_read_effective_profile_uses_and_restores_profile_runtime_scope(fleet, monkeypatch):
+    from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli import config_effective
+    from hermes_cli.fleet_catalog_transactions import _read_effective_profile
+
+    path = fleet / "profiles" / "dynamic" / "config.yaml"
+    seen = []
+    monkeypatch.setattr(
+        config_effective,
+        "load_user_config_effective",
+        lambda requested, fail_closed: seen.append((requested, fail_closed, get_hermes_home_override())) or {},
+    )
+    token = set_hermes_home_override(fleet / "outer")
+    try:
+        _read_effective_profile(path)
+        assert seen == [(path, True, str(path.parent))]
+        assert get_hermes_home_override() == str(fleet / "outer")
+    finally:
+        reset_hermes_home_override(token)
 
 
 def test_catalog_only_edit_invalidates_both_config_loaders(fleet):

@@ -168,6 +168,26 @@ def test_contabo_restore_existing_candidate_does_not_require_absence(tmp_path):
     assert seen == [("existing", "canary")]
 
 
+def test_probe_openai_compatible_manifest_and_models_use_listing(monkeypatch):
+    from types import SimpleNamespace
+
+    from agent import auxiliary_client
+    from hermes_cli.models_validate import probe_openai_compatible_model
+
+    calls = []
+    client = SimpleNamespace(
+        models=SimpleNamespace(list=lambda **kwargs: calls.append(("models", kwargs)) or SimpleNamespace(
+            data=[SimpleNamespace(id="present"), {"id": "other"}]
+        )),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: calls.append(("chat", kwargs)))),
+    )
+    monkeypatch.setattr(auxiliary_client, "get_text_auxiliary_client", lambda task: (client, None))
+
+    assert probe_openai_compatible_model("present", kind="manifest", provider="contabo-openai") is True
+    assert probe_openai_compatible_model("missing", kind="models", provider="contabo-openai") is False
+    assert [kind for kind, _ in calls] == ["models", "models"]
+
+
 class RecordingAdapter(PoolAdapter):
     def __init__(self, pool, events, fail=False):
         self.pool = pool

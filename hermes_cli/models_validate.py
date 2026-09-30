@@ -541,6 +541,17 @@ def probe_openai_compatible_model(model: str, *, kind: str, provider: str,
     from agent.auxiliary_client import get_text_auxiliary_client
     client, _ = get_text_auxiliary_client("fleet_catalog_probe")
     if client is None: return False
+    if kind in {"manifest", "models"}:
+        try:
+            listing = client.models.list(timeout=timeout)
+        except TypeError:
+            listing = client.models.list()
+        data = getattr(listing, "data", listing)
+        ids = {
+            str(item.get("id") if isinstance(item, dict) else getattr(item, "id", ""))
+            for item in (data or [])
+        }
+        return model in ids
     kwargs = {"model": model, "messages": [{"role": "user", "content": "Reply with OK."}],
               "timeout": timeout, "stream": kind == "streaming"}
     if kind == "tool": kwargs["tools"] = [{"type": "function", "function": {"name": "noop", "parameters": {"type": "object"}}}]
