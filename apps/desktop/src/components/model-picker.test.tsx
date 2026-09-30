@@ -1,7 +1,7 @@
 import type { ModelOptionsResult } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -21,7 +21,7 @@ vi.mock('@/lib/model-options', async importOriginal => ({
   requestModelOptions: vi.fn()
 }))
 
-import { requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 
 stubResizeObserver()
 stubMenuDomApis()
@@ -184,6 +184,28 @@ describe('ModelPickerDialog readiness overlay', () => {
     ]
   }
 
+  it('does not refetch the static catalog after a minute or window focus', async () => {
+    vi.useFakeTimers()
+    try {
+      renderPicker()
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(vi.mocked(requestModelOptions)).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_001)
+        window.dispatchEvent(new Event('focus'))
+        await Promise.resolve()
+      })
+
+      expect(vi.mocked(requestModelOptions)).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('renders the provider status glyph with an accessible label', async () => {
     vi.mocked(requestModelOptions).mockResolvedValue(READY_OPTIONS)
     renderPicker()
@@ -194,6 +216,70 @@ describe('ModelPickerDialog readiness overlay', () => {
     const status = await screen.findByRole('img', { hidden: true, name: /ready/i })
 
     expect(status.textContent).toBe('●')
+  })
+
+  it('updates readiness in place without reordering or disturbing the focused row until close', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const key = modelOptionsQueryKey('default', undefined, undefined)
+    const first: ModelOptionsResult = {
+      providers: [
+        { slug: 'alpha', name: 'Alpha', models: ['one'], glyph: '●', readiness: 'ready' },
+        { slug: 'beta', name: 'Beta', models: ['two'], glyph: '○', readiness: 'depleted' }
+      ]
+    }
+    const reordered: ModelOptionsResult = {
+      providers: [
+        { slug: 'beta', name: 'Beta', models: ['two'], glyph: '●', readiness: 'ready' },
+        { slug: 'alpha', name: 'Alpha', models: ['one'], glyph: '○', readiness: 'depleted' }
+      ]
+    }
+    vi.mocked(requestModelOptions).mockResolvedValue(first)
+    const props = {
+      currentModel: 'one',
+      currentProvider: 'alpha',
+      onOpenChange: vi.fn(),
+      onSelect: vi.fn(),
+      open: true
+    }
+    const view = render(
+      <QueryClientProvider client={client}>
+        <I18nProvider>
+          <ModelPickerDialog {...props} />
+        </I18nProvider>
+      </QueryClientProvider>
+    )
+    await screen.findByText('one')
+    const one = screen.getByText('one').closest('[cmdk-item]') as HTMLElement
+    const two = screen.getByText('two').closest('[cmdk-item]') as HTMLElement
+
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' })
+    await waitFor(() => expect(two.getAttribute('aria-selected')).toBe('true'))
+    const focused = document.activeElement
+    act(() => client.setQueryData(key, reordered))
+
+    expect(screen.getAllByRole('option')).toEqual([one, two])
+    expect(screen.getByText('one').closest('[cmdk-item]')).toBe(one)
+    expect(screen.getByText('two').closest('[cmdk-item]')).toBe(two)
+    expect(two.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(focused)
+    await waitFor(() => expect(screen.getAllByRole('img', { hidden: true })[0]?.textContent).toBe('○'))
+
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <I18nProvider>
+          <ModelPickerDialog {...props} open={false} />
+        </I18nProvider>
+      </QueryClientProvider>
+    )
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <I18nProvider>
+          <ModelPickerDialog {...props} />
+        </I18nProvider>
+      </QueryClientProvider>
+    )
+
+    await waitFor(() => expect(screen.getAllByRole('option').map(row => row.textContent)).toEqual(['two', 'one']))
   })
 
   it('defaults the initial cursor to the preferred ready-1M model', async () => {

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, preferredCursorValue, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderMatches, modelOptionsQueryKey, pickerItemValue, preferredCursorValue, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -70,7 +70,9 @@ export function ModelPickerDialog({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
-    enabled: open
+    enabled: open,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false
   })
 
   // Live load state for the managed local server: which model is loading
@@ -149,6 +151,43 @@ export function ModelPickerDialog({
   }, [open, refetchOptions])
 
   const providers = modelOptions.data?.providers ?? []
+  const openOrderRef = useRef<readonly string[]>([])
+
+  if (!open) {
+    openOrderRef.current = []
+  } else if (openOrderRef.current.length === 0 && providers.length > 0) {
+    openOrderRef.current = providers.flatMap(provider =>
+      (provider.models ?? []).map(model => pickerItemValue(provider.slug, model))
+    )
+  }
+
+  const displayedProviders = useMemo(() => {
+    if (!open || openOrderRef.current.length === 0) {
+      return providers
+    }
+
+    const providersBySlug = new Map(providers.map(provider => [provider.slug, provider]))
+    const modelsBySlug = new Map<string, string[]>()
+
+    for (const id of openOrderRef.current) {
+      const separator = id.indexOf(':')
+      const slug = id.slice(0, separator)
+      const model = id.slice(separator + 1)
+
+      if (providersBySlug.get(slug)?.models?.includes(model)) {
+        const models = modelsBySlug.get(slug) ?? []
+
+        models.push(model)
+        modelsBySlug.set(slug, models)
+      }
+    }
+
+    return [...modelsBySlug].flatMap(([slug, models]) => {
+      const provider = providersBySlug.get(slug)
+
+      return provider ? [{ ...provider, models }] : []
+    })
+  }, [open, providers])
 
   // Seed the picker's initial cursor ONCE per open — from the first options
   // payload that names a `preferred_model` (the Python health overlay marks the
@@ -238,7 +277,7 @@ export function ModelPickerDialog({
               loading={loading}
               loadingModels={loadingModels}
               onSelectModel={selectModel}
-              providers={providers}
+              providers={displayedProviders}
               search={search}
             />
           </CommandList>
@@ -370,13 +409,13 @@ function ModelResults({
                     locked && 'cursor-not-allowed opacity-45'
                   )}
                   disabled={locked}
-                  key={`${provider.slug}:${model}`}
+                  key={pickerItemValue(provider.slug, model)}
                   onSelect={() => {
                     if (!locked) {
                       onSelectModel(provider, model)
                     }
                   }}
-                  value={`${provider.slug}:${model}`}
+                  value={pickerItemValue(provider.slug, model)}
                 >
                   <span className="min-w-0 flex-1 truncate">
                     <HighlightMatches foldSeparators query={search} text={model} />
