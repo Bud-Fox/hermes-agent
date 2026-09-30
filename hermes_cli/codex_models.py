@@ -31,10 +31,11 @@ def probe_codex_model(model: str, *, kind: str, timeout: float = 20.0, transport
         client = OpenAI(**kwargs)
         transport = client.responses
 
-    request = {"model": model, "input": "Reply with the non-empty text OK.", "stream": True}
+    request = {"model": model, "input": "Reply with the non-empty text OK.", "stream": True,
+               "timeout": timeout}
     if kind == "tool":
         request.update({"input": "Call the noop tool exactly once.", "tools": [{"type": "function", "name": "noop", "description": "No operation", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}], "tool_choice": {"type": "function", "name": "noop"}})
-    stream = transport.stream(**request) if hasattr(transport, "stream") else transport.create(**request)
+    stream = transport.create(**request)
     if hasattr(stream, "__enter__"):
         with stream as events:
             return _validate_probe_events(events, kind)

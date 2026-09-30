@@ -101,3 +101,16 @@ def test_commit_verifies_expected_hashes_modes_and_equal_profile_catalog_hashes(
     assert verification["all_expected_hashes_match"] is True
     assert verification["all_expected_modes_match"] is True
     assert verification["all_profile_static_hashes_equal"] is True
+
+
+def test_catalog_only_edit_invalidates_both_config_loaders(fleet):
+    from hermes_cli import config, config_effective
+    config._LOAD_CONFIG_CACHE.clear()
+    config_effective._EFFECTIVE_CACHE.clear()
+    path = fleet / "config.yaml"
+    assert config.load_config()["providers"]["fleet"]["models"] == ["Exact/ID"]
+    assert config_effective.load_user_config_effective(path)["providers"]["fleet"]["models"] == ["Exact/ID"]
+    catalog = fleet / "catalog.shared.yaml"
+    catalog.write_bytes(catalog.read_bytes().replace(b"Exact/ID", b"Fresh/ID"))
+    assert config.load_config()["providers"]["fleet"]["models"] == ["Fresh/ID"]
+    assert config_effective.load_user_config_effective(path)["providers"]["fleet"]["models"] == ["Fresh/ID"]

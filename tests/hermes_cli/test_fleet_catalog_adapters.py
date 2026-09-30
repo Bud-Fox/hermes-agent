@@ -17,6 +17,7 @@ class FakeIO(AdapterIO):
         self.probe = probe or (lambda pool, model, kind: True)
         self.commands = []
         self.files = {}
+        self.file_modes = {}
         self.catalog = b"version: 1\nproviders:\n  openai-codex:\n    models: []\n"
         self.catalog_writes = 0
 
@@ -38,6 +39,16 @@ class FakeIO(AdapterIO):
 
     def write_json(self, path, value):
         self.files[str(path)] = value
+
+    def read_bytes(self, path):
+        return self.files[str(path)]
+
+    def write_bytes(self, path, value, mode=None):
+        self.files[str(path)] = value
+        if mode is not None: self.file_modes[str(path)] = mode
+
+    def file_mode(self, path):
+        return self.file_modes.get(str(path), 0o640)
 
     def catalog_bytes(self):
         return self.catalog
@@ -86,22 +97,22 @@ def test_codex_rejects_unsupported_or_failed_canary(failed):
 def test_contabo_prepare_runs_all_probes_and_commit_allowlisted_deploy(tmp_path):
     root = tmp_path / "contabo-router"
     io = FakeIO()
-    io.files[str(root / "app/models.json")] = {
-        "openai": {"models": [{"id": "old", "name": "Old", "supports_tools": True}]},
-        "anthropic": {"models": [{"id": "keep"}]},
-    }
+    original = b'{\n  "openai": {"models": [{"id":"old","name":"Old","supports_tools":true}]},\n  "anthropic": {"models": [{"id":"keep"}]}\n}\n'
+    io.files[str(root / "app/models.json")] = original
+    io.file_modes[str(root / "app/models.json")] = 0o640
+    io.models = ["old"]
     adapter = ContaboOpenAIAdapter(router_root=root, deploy_script=root / "deploy_router.sh")
     prepared = adapter.prepare_add("New/Model.X", io=io)
     assert prepared.metadata["probes"] == ["text", "tool", "streaming", "reasoning"]
     applied = adapter.commit(prepared, io=io)
-    entries = io.files[str(root / "app/models.json")]["openai"]["models"]
+    entries = __import__('json').loads(io.files[str(root / "app/models.json")])["openai"]["models"]
     assert entries[-1] == {"id": "New/Model.X", "name": "New/Model.X", "supports_tools": True}
     assert set(entries[-1]) == {"id", "name", "supports_tools"}
-    assert io.files[str(root / "app/models.json")]["anthropic"] == {"models": [{"id": "keep"}]}
+    assert __import__('json').loads(io.files[str(root / "app/models.json")])["anthropic"] == {"models": [{"id": "keep"}]}
     assert io.commands[-1][0] == (str(root / "deploy_router.sh"),)
     adapter.rollback(applied, io=io)
-    assert io.files[str(root / "app/models.json")]["openai"]["models"] == [
-        {"id": "old", "name": "Old", "supports_tools": True}]
+    assert io.files[str(root / "app/models.json")] == original
+    assert io.file_modes[str(root / "app/models.json")] == 0o640
     assert io.commands[-1][0] == (str(root / "deploy_router.sh"),)
 
 

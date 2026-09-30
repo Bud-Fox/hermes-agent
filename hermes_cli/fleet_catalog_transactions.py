@@ -140,11 +140,16 @@ def _invalidate_model_caches() -> None:
 
 
 def _read_effective_profile(path: Path) -> dict[str, Any]:
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
-    if raw is None: raw = {}
-    if not isinstance(raw, dict): raise ValueError(f"{path} top level must be a mapping")
-    from hermes_cli.fleet_catalog import apply_fleet_catalog
-    return apply_fleet_catalog(raw)
+    from hermes_cli.config_effective import load_user_config_effective
+    return load_user_config_effective(path, fail_closed=True)
+
+
+def _owner_route_parity(configs: list[dict[str, Any]]) -> bool:
+    def routes(cfg: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
+        providers = cfg.get("providers") or {}
+        return {str(owner): (value.get("base_url"), value.get("api_mode"))
+                for owner, value in providers.items() if isinstance(value, dict)}
+    return bool(configs) and len({json.dumps(routes(cfg), sort_keys=True) for cfg in configs}) == 1
 
 
 def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], None] = _invalidate_model_caches,
@@ -167,14 +172,16 @@ def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], N
         actual = {r["path"]: _sha(Path(r["path"]).read_bytes()) for r in manifest["files"]}
         actual[str(catalog_path())] = _sha(catalog_path().read_bytes())
         modes_match = all(stat.S_IMODE(Path(r["path"]).stat().st_mode) == int(r["mode"] or 0o600) for r in manifest["files"])
-        from hermes_cli.fleet_catalog import static_catalog_hash
+        from hermes_cli.fleet_catalog import apply_fleet_catalog, static_catalog_hash
         hashes = [static_catalog_hash(cfg) for cfg in effective]
+        expected_catalog_hash = static_catalog_hash(apply_fleet_catalog({}))
         verification = {"all_expected_hashes_match": actual == expected,
                         "all_expected_modes_match": modes_match,
-                        "all_profile_static_hashes_equal": len(set(hashes)) <= 1,
+                        "all_profile_static_hashes_equal": bool(hashes) and all(value == expected_catalog_hash for value in hashes),
+                        "all_profile_owner_routes_equal": _owner_route_parity(effective),
                         "actual_hashes": actual, "profile_static_hashes": hashes}
         _write_json(bundle / "verification.json", verification)
-        if not all(verification[key] for key in ("all_expected_hashes_match", "all_expected_modes_match", "all_profile_static_hashes_equal")):
+        if not all(verification[key] for key in ("all_expected_hashes_match", "all_expected_modes_match", "all_profile_static_hashes_equal", "all_profile_owner_routes_equal")):
             raise RuntimeError("post-commit fleet catalog verification failed")
     except Exception as exc:
         failures = []

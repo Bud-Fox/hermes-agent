@@ -10,8 +10,9 @@ from hermes_cli.codex_models import (
 
 
 class _ProbeTransport:
-    def __init__(self, events): self.events = events
-    def stream(self, **_kwargs): return iter(self.events)
+    def __init__(self, events): self.events, self.kwargs = events, None
+    def create(self, **kwargs): self.kwargs = kwargs; return iter(self.events)
+    def stream(self, **_kwargs): raise AssertionError("SDK stream helper must not be used")
 
 
 def test_codex_probe_requires_valid_text_completed_stream_and_real_tool_call():
@@ -25,6 +26,16 @@ def test_codex_probe_requires_valid_text_completed_stream_and_real_tool_call():
     tool = _ProbeTransport([{"type": "response.output_item.added", "item": {"type": "function_call", "name": "noop"}}, {"type": "response.completed"}])
     assert probe_codex_model("literal", kind="tool", transport=tool) is True
     assert probe_codex_model("literal", kind="tool", transport=text) is False
+
+
+def test_codex_probe_uses_raw_create_stream_and_enforces_timeout():
+    transport = _ProbeTransport([
+        {"type": "response.output_text.delta", "delta": "OK"},
+        {"type": "response.completed"},
+    ])
+    assert probe_codex_model("literal", kind="text", timeout=3.25, transport=transport)
+    assert transport.kwargs["stream"] is True
+    assert transport.kwargs["timeout"] == 3.25
 
 
 CHATGPT_REJECTED_CODEX_PRO_SLUGS = {

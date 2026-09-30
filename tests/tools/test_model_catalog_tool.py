@@ -29,6 +29,7 @@ def test_apply_status_and_rollback_persist_receipt(tmp_path, monkeypatch):
     fake = FakeOrchestrator()
     monkeypatch.setattr(tool, "_plans_root", lambda: tmp_path)
     monkeypatch.setattr(tool, "_build_orchestrator", lambda: fake)
+    monkeypatch.setattr(tool, "_invalidate_and_verify_catalog", lambda: None)
     plan = json.loads(tool.model_catalog("plan_add", "literal.id", ["openai-codex", "contabo-openai"]))
     txid = plan["transaction_id"]
     io = FakeIO()
@@ -46,6 +47,7 @@ def test_apply_journals_each_step_outside_plan_and_crash_is_recoverable(tmp_path
     fake = FakeOrchestrator()
     monkeypatch.setattr(tool, "_plans_root", lambda: tmp_path)
     monkeypatch.setattr(tool, "_build_orchestrator", lambda: fake)
+    monkeypatch.setattr(tool, "_invalidate_and_verify_catalog", lambda: None)
     plan = json.loads(tool.model_catalog("plan_add", "literal.id", ["openai-codex", "contabo-openai"]))
     txid = plan["transaction_id"]
     fake.crash_after = 1
@@ -95,7 +97,9 @@ class FakeOrchestrator:
             raise RuntimeError("simulated crash")
         self.events.append(f"commit:{change.pool}")
         from hermes_cli.fleet_catalog_adapters import AppliedChange
-        return AppliedChange(change, {"models_before": {"large": ["x"] * 100}})
+        data: dict[str, object] = {"models_before_mode": 0o640}
+        if change.pool == "contabo-openai": data["models_before_bytes"] = b'{"openai":{"models":[{"id":"old"}]}}'
+        return AppliedChange(change, data)
 
     def activate_catalog(self, changes, *, io, snapshot=None):
         self.events.append("catalog")

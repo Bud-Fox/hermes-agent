@@ -89,6 +89,22 @@ def _request_approval(action: str, transaction_id: str) -> bool:
     return verdict.get("approved") is True
 
 
+def _invalidate_and_verify_catalog() -> None:
+    from hermes_cli import config, config_effective
+    from hermes_cli.fleet_catalog import (apply_fleet_catalog, canonical_profile_config_paths,
+                                          static_catalog_hash)
+    from hermes_cli.fleet_catalog_transactions import _owner_route_parity
+    config._LOAD_CONFIG_CACHE.clear()
+    config_effective._EFFECTIVE_CACHE.clear()
+    expected = static_catalog_hash(apply_fleet_catalog({}))
+    readbacks = [config_effective.load_user_config_effective(path, fail_closed=True)
+                 for path in canonical_profile_config_paths()]
+    if not readbacks or any(static_catalog_hash(value) != expected for value in readbacks):
+        raise RuntimeError("profile-scoped model-options inventory readback hash mismatch")
+    if not _owner_route_parity(readbacks):
+        raise RuntimeError("All-profiles owner-route parity check failed")
+
+
 def _prepared(plan: dict[str, Any]) -> list[PreparedChange]:
     return [PreparedChange(item["pool"], plan["model"], item.get("metadata", {})) for item in plan["changes"]]
 
@@ -107,6 +123,9 @@ def _journal_applied(bundle: Path, plan: dict[str, Any]) -> list[AppliedChange]:
     for step in journal.get("steps", []):
         if step.get("state") != "applied": continue
         rollback = json.loads((bundle / step["rollback_snapshot"]).read_text(encoding="utf-8"))
+        payload = step.get("rollback_payload")
+        if payload:
+            rollback["models_before_bytes"] = (bundle / payload).read_bytes()
         out.append(AppliedChange(prepared[step["pool"]], rollback))
     return out
 
@@ -157,13 +176,23 @@ def model_catalog(action: str, model: str | None = None, pools: list[str] | None
                 step = {"pool": change.pool, "state": "applying"}
                 journal["steps"].append(step); _atomic_json(bundle / "journal.json", journal)
                 item = orchestrator.commit_one(change, io=io)
+                rollback_data = dict(item.rollback_data)
+                payload_name = None
+                if change.pool == "contabo-openai":
+                    payload_name = f"rollback-{index:04d}.models.json"
+                    payload_bytes = rollback_data.pop("models_before_bytes")
+                    _atomic_write_bytes(bundle / payload_name, payload_bytes, 0o600)
+                item = AppliedChange(change, rollback_data)
                 rollback_name = f"rollback-{index:04d}.json"
-                _atomic_json(bundle / rollback_name, item.rollback_data)
+                json_rollback = {key: value for key, value in item.rollback_data.items() if not isinstance(value, bytes)}
+                _atomic_json(bundle / rollback_name, json_rollback)
                 step.update({"state": "applied", "rollback_snapshot": rollback_name})
+                if payload_name: step["rollback_payload"] = payload_name
                 _atomic_json(bundle / "journal.json", journal)
                 applied.append(item)
             orchestrator.activate_catalog(changes, io=io, snapshot=snapshot)
             journal["catalog_state"] = "applied"; _atomic_json(bundle / "journal.json", journal)
+            _invalidate_and_verify_catalog()
             plan["applied_pools"] = [item.prepared.pool for item in applied]
             plan["status"] = "committed"
         else:

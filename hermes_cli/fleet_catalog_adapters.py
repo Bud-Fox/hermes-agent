@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +50,16 @@ class AdapterIO:
     def read_json(self, path: Path) -> Any:
         import json
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def read_bytes(self, path: Path) -> bytes:
+        return path.read_bytes()
+
+    def write_bytes(self, path: Path, value: bytes, mode: int | None = None) -> None:
+        from hermes_cli.fleet_catalog_transactions import _atomic_write_bytes
+        _atomic_write_bytes(path, value, mode if mode is not None else 0o600)
+
+    def file_mode(self, path: Path) -> int:
+        return stat.S_IMODE(path.stat().st_mode)
 
     def write_json(self, path: Path, value: Any) -> None:
         import json
@@ -143,8 +155,9 @@ class ContaboOpenAIAdapter(PoolAdapter):
             raise RuntimeError("router command failed")
 
     def commit(self, change: PreparedChange, *, io: AdapterIO) -> AppliedChange:
-        before = copy.deepcopy(io.read_json(self.models_path))
-        after = copy.deepcopy(before)
+        before = io.read_bytes(self.models_path)
+        before_mode = io.file_mode(self.models_path)
+        after = json.loads(before.decode("utf-8"))
         models = self._model_list(after)
         if not any(item.get("id") == change.model for item in models):
             metadata = change.metadata.get("model_entry") if isinstance(change.metadata, dict) else None
@@ -155,7 +168,7 @@ class ContaboOpenAIAdapter(PoolAdapter):
             elif models and isinstance(models[0].get("supports_tools"), bool):
                 entry["supports_tools"] = bool(models[0]["supports_tools"])
             models.append(entry)
-        io.write_json(self.models_path, after)
+        io.write_bytes(self.models_path, (json.dumps(after, indent=2, ensure_ascii=False) + "\n").encode(), before_mode)
         try:
             self._run_checked(io, ("python", "-m", "pytest", "-q", "tests"), 120)
             self._run_checked(io, (str(self.deploy_script),), 300)
@@ -163,22 +176,34 @@ class ContaboOpenAIAdapter(PoolAdapter):
                 if not io.probe_model(self.pool, change.model, kind):
                     raise RuntimeError(f"post-deploy {kind} verification failed")
         except Exception:
-            io.write_json(self.models_path, before)
+            io.write_bytes(self.models_path, before, before_mode)
             self._run_checked(io, (str(self.deploy_script),), 300)
-            for kind in ("manifest", "models", "canary"):
-                if not io.probe_model(self.pool, change.model, kind):
-                    raise RuntimeError(f"compensation {kind} verification failed")
+            self._verify_restore(io, change.model, before, before_mode)
             raise
-        return AppliedChange(change, {"models_before": before})
+        return AppliedChange(change, {"models_before_bytes": before, "models_before_mode": before_mode})
 
     def rollback(self, applied: AppliedChange, *, io: AdapterIO) -> None:
-        before = applied.rollback_data.get("models_before")
+        before = applied.rollback_data.get("models_before_bytes")
         if before is not None:
-            io.write_json(self.models_path, before)
+            mode = int(applied.rollback_data["models_before_mode"])
+            io.write_bytes(self.models_path, before, mode)
             self._run_checked(io, (str(self.deploy_script),), 300)
-            for kind in ("manifest", "models", "canary"):
-                if not io.probe_model(self.pool, applied.prepared.model, kind):
-                    raise RuntimeError(f"rollback {kind} verification failed")
+            self._verify_restore(io, applied.prepared.model, before, mode)
+
+    def _verify_restore(self, io: AdapterIO, candidate: str, before: bytes, mode: int) -> None:
+        if io.read_bytes(self.models_path) != before or io.file_mode(self.models_path) != mode:
+            raise RuntimeError("models.json byte/mode restoration verification failed")
+        restored = json.loads(before.decode("utf-8"))
+        ids = [item.get("id") for item in self._model_list(restored)]
+        if candidate in ids:
+            raise RuntimeError("candidate remains after restoration")
+        if not ids:
+            raise RuntimeError("no pre-existing model available for rollback canary")
+        for kind in ("manifest", "models"):
+            if not io.probe_model(self.pool, candidate, kind):
+                raise RuntimeError(f"rollback {kind} verification failed")
+        if not io.probe_model(self.pool, str(ids[0]), "canary"):
+            raise RuntimeError("rollback pre-existing model canary failed")
 
 
 class PoolOrchestrator:

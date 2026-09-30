@@ -67,9 +67,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
-                return copy.deepcopy(cached[8])
+        if cached is not None and cache_sig is not None and cached[:len(cache_sig)] == cache_sig:
+            if all(_config._env_ref_lookup(k) == v for k, v in cached[len(cache_sig) + 1].items()):
+                return copy.deepcopy(cached[len(cache_sig)])
 
         raw: Dict[str, Any] = {}
         recovered = False

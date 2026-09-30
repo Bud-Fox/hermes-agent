@@ -2190,9 +2190,14 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
+    try:
+        from hermes_cli.fleet_catalog import catalog_path
+        catalog_sig = file_signature(catalog_path().stat())
+    except OSError:
+        catalog_sig = (0, 0, 0, 0)
+    if user_sig is None and managed_sig == (0, 0, 0, 0) and catalog_sig == (0, 0, 0, 0):
         return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
+    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig, *catalog_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
@@ -2259,16 +2264,17 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
+        if cached is not None and cache_sig is not None and cached[:len(cache_sig)] == cache_sig:
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
             # Without this, a load_config() that ran before load_hermes_dotenv() pins unexpanded literals
             # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
-            env_snapshot = cached[9] if len(cached) > 9 else {}
+            config_index = len(cache_sig)
+            env_snapshot = cached[config_index + 1] if len(cached) > config_index + 1 else {}
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
                 from hermes_cli.fleet_catalog import apply_fleet_catalog
-                authoritative = apply_fleet_catalog(cached[8])
+                authoritative = apply_fleet_catalog(cached[config_index])
                 return copy.deepcopy(authoritative) if want_deepcopy else authoritative
 
         config = copy.deepcopy(DEFAULT_CONFIG)
