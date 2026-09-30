@@ -136,7 +136,14 @@ def _verify(path: Path, record: dict[str, Any]) -> None:
 
 def _invalidate_model_caches() -> None:
     from hermes_cli.models import clear_provider_models_cache
-    clear_provider_models_cache()
+    from hermes_cli.profiles import _iter_named_profile_dirs, _get_default_hermes_home
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    for home in [_get_default_hermes_home(), *_iter_named_profile_dirs()]:
+        tok = set_hermes_home_override(home)
+        try:
+            clear_provider_models_cache()
+        finally:
+            reset_hermes_home_override(tok)
 
 
 def _read_effective_profile(path: Path) -> dict[str, Any]:
