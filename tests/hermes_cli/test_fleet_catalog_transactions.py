@@ -103,6 +103,29 @@ def test_commit_verifies_expected_hashes_modes_and_equal_profile_catalog_hashes(
     assert verification["all_profile_static_hashes_equal"] is True
 
 
+def test_commit_verifies_picker_payload_inventory_for_every_profile(fleet, monkeypatch):
+    from hermes_cli import fleet_catalog_transactions as transactions
+
+    seen = []
+
+    def build(config):
+        seen.append(config)
+        providers = config.get("providers", {})
+        return {"providers": [
+            {"provider_id": provider, "models": value.get("models", [])}
+            for provider, value in providers.items()
+        ]}
+
+    monkeypatch.setattr(transactions, "_picker_payload", build)
+    tx = prepare_migration()
+    commit_transaction(tx.transaction_id)
+
+    verification = json.loads((tx.bundle_path / "verification.json").read_text())
+    assert verification["all_profile_picker_inventories_equal"] is True
+    assert verification["all_profiles_owner_route_picker_equal"] is True
+    assert len(seen) == 3  # two canonical profiles plus the All-profiles owner route
+
+
 def test_catalog_only_edit_invalidates_both_config_loaders(fleet):
     from hermes_cli import config, config_effective
     config._LOAD_CONFIG_CACHE.clear()

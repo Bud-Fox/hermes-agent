@@ -32,7 +32,10 @@ def test_apply_status_and_rollback_persist_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(tool, "_invalidate_and_verify_catalog", lambda: None)
     plan = json.loads(tool.model_catalog("plan_add", "literal.id", ["openai-codex", "contabo-openai"]))
     txid = plan["transaction_id"]
-    io = FakeIO()
+    io = FakeIO(probe=lambda pool, model, kind: kind not in {"manifest", "models"})
+    models_path = "/Users/user/contabo-router/app/models.json"
+    io.files[models_path] = b'{"openai":{"models":[{"id":"old"}]}}'
+    io.file_modes[models_path] = 0o640
     applied = json.loads(tool.model_catalog("apply", transaction_id=txid, require_approval=False, io=io))
     assert applied["status"] == "committed"
     assert json.loads(tool.model_catalog("status", transaction_id=txid))["status"] == "committed"
@@ -43,6 +46,24 @@ def test_apply_status_and_rollback_persist_receipt(tmp_path, monkeypatch):
     assert again["status"] == "already_rolled_back"
 
 
+def test_apply_persists_contabo_rollback_payload_before_commit(tmp_path, monkeypatch):
+    fake = FakeOrchestrator()
+    fake.assert_precommit_payload = True
+    monkeypatch.setattr(tool, "_plans_root", lambda: tmp_path)
+    monkeypatch.setattr(tool, "_build_orchestrator", lambda: fake)
+    monkeypatch.setattr(tool, "_invalidate_and_verify_catalog", lambda: None)
+    plan = json.loads(tool.model_catalog("plan_add", "literal.id", ["contabo-openai"]))
+    fake.bundle = tmp_path / plan["transaction_id"]
+    io = FakeIO()
+    models_path = "/Users/user/contabo-router/app/models.json"
+    io.files[models_path] = b'{"openai":{"models":[{"id":"old"}]}}'
+    io.file_modes[models_path] = 0o640
+
+    applied = json.loads(tool.model_catalog("apply", transaction_id=plan["transaction_id"], require_approval=False, io=io))
+
+    assert applied["status"] == "committed"
+
+
 def test_apply_journals_each_step_outside_plan_and_crash_is_recoverable(tmp_path, monkeypatch):
     fake = FakeOrchestrator()
     monkeypatch.setattr(tool, "_plans_root", lambda: tmp_path)
@@ -51,7 +72,10 @@ def test_apply_journals_each_step_outside_plan_and_crash_is_recoverable(tmp_path
     plan = json.loads(tool.model_catalog("plan_add", "literal.id", ["openai-codex", "contabo-openai"]))
     txid = plan["transaction_id"]
     fake.crash_after = 1
-    io = FakeIO()
+    io = FakeIO(probe=lambda pool, model, kind: kind not in {"manifest", "models"})
+    models_path = "/Users/user/contabo-router/app/models.json"
+    io.files[models_path] = b'{"openai":{"models":[{"id":"old"}]}}'
+    io.file_modes[models_path] = 0o640
     failed = json.loads(tool.model_catalog("apply", transaction_id=txid, require_approval=False, io=io))
     assert failed["status"] == "error"
     persisted = json.loads((tmp_path / txid / "plan.json").read_text())
@@ -76,8 +100,14 @@ def test_apply_requires_approval_by_default(tmp_path, monkeypatch):
 
 class FakeOrchestrator:
     def __init__(self):
+        from hermes_cli.fleet_catalog_adapters import ContaboOpenAIAdapter
         self.events = []
         self.crash_after: int | None = None
+        self.assert_precommit_payload = False
+        self.bundle = None
+        self.adapters = {
+            "contabo-openai": ContaboOpenAIAdapter(),
+        }
 
 
     def prepare(self, model, pools, *, io):
@@ -93,12 +123,21 @@ class FakeOrchestrator:
         return out
 
     def commit_one(self, change, *, io):
+        if self.assert_precommit_payload:
+            assert self.bundle is not None
+            journal = json.loads((self.bundle / "journal.json").read_text())
+            step = journal["steps"][-1]
+            assert step["state"] == "applying"
+            assert (self.bundle / step["rollback_snapshot"]).is_file()
+            assert (self.bundle / step["rollback_payload"]).is_file()
         if self.crash_after == len([e for e in self.events if e.startswith("commit:")]):
             raise RuntimeError("simulated crash")
         self.events.append(f"commit:{change.pool}")
         from hermes_cli.fleet_catalog_adapters import AppliedChange
-        data: dict[str, object] = {"models_before_mode": 0o640}
-        if change.pool == "contabo-openai": data["models_before_bytes"] = b'{"openai":{"models":[{"id":"old"}]}}'
+        data: dict[str, object] = {}
+        if change.pool == "contabo-openai":
+            data = {"models_before_mode": 0o640,
+                    "models_before_bytes": b'{"openai":{"models":[{"id":"old"}]}}'}
         return AppliedChange(change, data)
 
     def activate_catalog(self, changes, *, io, snapshot=None):

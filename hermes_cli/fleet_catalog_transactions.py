@@ -144,6 +144,34 @@ def _read_effective_profile(path: Path) -> dict[str, Any]:
     return load_user_config_effective(path, fail_closed=True)
 
 
+def _picker_payload(config: dict[str, Any]) -> dict[str, Any]:
+    from hermes_cli.config import get_compatible_custom_providers, stringify_provider_map
+    from hermes_cli.inventory import ConfigContext, build_model_options_payload
+    model_cfg = config.get("model", {})
+    if isinstance(model_cfg, dict):
+        current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
+        current_provider = str(model_cfg.get("provider", "") or "")
+        current_base_url = str(model_cfg.get("base_url", "") or "")
+    else:
+        current_model, current_provider, current_base_url = str(model_cfg or ""), "", ""
+    excluded = config.get("model_catalog", {}).get("excluded_providers") or []
+    context = ConfigContext(
+        current_provider=current_provider, current_model=current_model,
+        current_base_url=current_base_url,
+        user_providers=stringify_provider_map(config.get("providers")),
+        custom_providers=get_compatible_custom_providers(config),
+        excluded_providers=excluded if isinstance(excluded, list) else [],
+    )
+    return build_model_options_payload(context, explicit_only=True)
+
+
+def _picker_inventory(payload: dict[str, Any]) -> dict[str, list[str]]:
+    return {
+        str(row.get("provider_id") or row.get("slug") or ""): [str(model) for model in row.get("models") or []]
+        for row in payload.get("providers", []) if isinstance(row, dict)
+    }
+
+
 def _owner_route_parity(configs: list[dict[str, Any]]) -> bool:
     def routes(cfg: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
         providers = cfg.get("providers") or {}
@@ -175,13 +203,25 @@ def commit_transaction(transaction_id: str, *, invalidate_caches: Callable[[], N
         from hermes_cli.fleet_catalog import apply_fleet_catalog, static_catalog_hash
         hashes = [static_catalog_hash(cfg) for cfg in effective]
         expected_catalog_hash = static_catalog_hash(apply_fleet_catalog({}))
+        picker_payloads = [_picker_payload(cfg) for cfg in effective]
+        picker_inventories = [_picker_inventory(payload) for payload in picker_payloads]
+        expected_picker = _picker_inventory(_picker_payload(apply_fleet_catalog({})))
+        picker_parity = (bool(picker_inventories)
+                         and all(value == expected_picker for value in picker_inventories))
+        owner_route_parity = _owner_route_parity(effective)
         verification = {"all_expected_hashes_match": actual == expected,
                         "all_expected_modes_match": modes_match,
                         "all_profile_static_hashes_equal": bool(hashes) and all(value == expected_catalog_hash for value in hashes),
-                        "all_profile_owner_routes_equal": _owner_route_parity(effective),
-                        "actual_hashes": actual, "profile_static_hashes": hashes}
+                        "all_profile_picker_inventories_equal": picker_parity,
+                        "all_profile_owner_routes_equal": owner_route_parity,
+                        "all_profiles_owner_route_picker_equal": owner_route_parity and picker_parity,
+                        "actual_hashes": actual, "profile_static_hashes": hashes,
+                        "profile_picker_inventories": picker_inventories}
         _write_json(bundle / "verification.json", verification)
-        if not all(verification[key] for key in ("all_expected_hashes_match", "all_expected_modes_match", "all_profile_static_hashes_equal", "all_profile_owner_routes_equal")):
+        required = ("all_expected_hashes_match", "all_expected_modes_match",
+                    "all_profile_static_hashes_equal", "all_profile_picker_inventories_equal",
+                    "all_profile_owner_routes_equal", "all_profiles_owner_route_picker_equal")
+        if not all(verification[key] for key in required):
             raise RuntimeError("post-commit fleet catalog verification failed")
     except Exception as exc:
         failures = []

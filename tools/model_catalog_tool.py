@@ -93,14 +93,20 @@ def _invalidate_and_verify_catalog() -> None:
     from hermes_cli import config, config_effective
     from hermes_cli.fleet_catalog import (apply_fleet_catalog, canonical_profile_config_paths,
                                           static_catalog_hash)
-    from hermes_cli.fleet_catalog_transactions import _owner_route_parity
+    from hermes_cli.fleet_catalog_transactions import (_owner_route_parity, _picker_inventory,
+                                                       _picker_payload)
     config._LOAD_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
-    expected = static_catalog_hash(apply_fleet_catalog({}))
+    expected_config = apply_fleet_catalog({})
+    expected = static_catalog_hash(expected_config)
+    expected_picker = _picker_inventory(_picker_payload(expected_config))
     readbacks = [config_effective.load_user_config_effective(path, fail_closed=True)
                  for path in canonical_profile_config_paths()]
     if not readbacks or any(static_catalog_hash(value) != expected for value in readbacks):
         raise RuntimeError("profile-scoped model-options inventory readback hash mismatch")
+    picker_inventories = [_picker_inventory(_picker_payload(value)) for value in readbacks]
+    if any(value != expected_picker for value in picker_inventories):
+        raise RuntimeError("profile-scoped picker provider/model inventory mismatch")
     if not _owner_route_parity(readbacks):
         raise RuntimeError("All-profiles owner-route parity check failed")
 
@@ -173,21 +179,32 @@ def model_catalog(action: str, model: str | None = None, pools: list[str] | None
             _atomic_json(bundle / "plan.json", plan)
             applied = []
             for index, change in enumerate(changes):
-                step = {"pool": change.pool, "state": "applying"}
+                rollback_name = f"rollback-{index:04d}.json"
+                payload_name = None
+                rollback_data: dict[str, Any] = {}
+                if change.pool == "contabo-openai":
+                    adapter = orchestrator.adapters[change.pool]
+                    if not isinstance(adapter, ContaboOpenAIAdapter):
+                        raise RuntimeError("contabo-openai adapter type mismatch")
+                    models_path = adapter.models_path
+                    rollback_data = {
+                        "models_before_mode": io.file_mode(models_path),
+                    }
+                    payload_name = f"rollback-{index:04d}.models.json"
+                    _atomic_write_bytes(bundle / payload_name, io.read_bytes(models_path), 0o600)
+                _atomic_json(bundle / rollback_name, rollback_data)
+                step = {"pool": change.pool, "state": "applying",
+                        "rollback_snapshot": rollback_name}
+                if payload_name:
+                    step["rollback_payload"] = payload_name
                 journal["steps"].append(step); _atomic_json(bundle / "journal.json", journal)
                 item = orchestrator.commit_one(change, io=io)
-                rollback_data = dict(item.rollback_data)
-                payload_name = None
-                if change.pool == "contabo-openai":
-                    payload_name = f"rollback-{index:04d}.models.json"
-                    payload_bytes = rollback_data.pop("models_before_bytes")
-                    _atomic_write_bytes(bundle / payload_name, payload_bytes, 0o600)
+                committed_rollback = dict(item.rollback_data)
+                committed_rollback.pop("models_before_bytes", None)
+                if committed_rollback != rollback_data:
+                    raise RuntimeError(f"{change.pool} rollback snapshot changed during commit")
                 item = AppliedChange(change, rollback_data)
-                rollback_name = f"rollback-{index:04d}.json"
-                json_rollback = {key: value for key, value in item.rollback_data.items() if not isinstance(value, bytes)}
-                _atomic_json(bundle / rollback_name, json_rollback)
-                step.update({"state": "applied", "rollback_snapshot": rollback_name})
-                if payload_name: step["rollback_payload"] = payload_name
+                step["state"] = "applied"
                 _atomic_json(bundle / "journal.json", journal)
                 applied.append(item)
             orchestrator.activate_catalog(changes, io=io, snapshot=snapshot)

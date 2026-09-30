@@ -96,7 +96,14 @@ def test_codex_rejects_unsupported_or_failed_canary(failed):
 
 def test_contabo_prepare_runs_all_probes_and_commit_allowlisted_deploy(tmp_path):
     root = tmp_path / "contabo-router"
-    io = FakeIO()
+    deployed = False
+
+    def probe(pool, model, kind):
+        if kind in {"manifest", "models"} and model == "New/Model.X":
+            return deployed
+        return True
+
+    io = FakeIO(probe=probe)
     original = b'{\n  "openai": {"models": [{"id":"old","name":"Old","supports_tools":true}]},\n  "anthropic": {"models": [{"id":"keep"}]}\n}\n'
     io.files[str(root / "app/models.json")] = original
     io.file_modes[str(root / "app/models.json")] = 0o640
@@ -104,12 +111,14 @@ def test_contabo_prepare_runs_all_probes_and_commit_allowlisted_deploy(tmp_path)
     adapter = ContaboOpenAIAdapter(router_root=root, deploy_script=root / "deploy_router.sh")
     prepared = adapter.prepare_add("New/Model.X", io=io)
     assert prepared.metadata["probes"] == ["text", "tool", "streaming", "reasoning"]
+    deployed = True
     applied = adapter.commit(prepared, io=io)
     entries = __import__('json').loads(io.files[str(root / "app/models.json")])["openai"]["models"]
     assert entries[-1] == {"id": "New/Model.X", "name": "New/Model.X", "supports_tools": True}
     assert set(entries[-1]) == {"id", "name", "supports_tools"}
     assert __import__('json').loads(io.files[str(root / "app/models.json")])["anthropic"] == {"models": [{"id": "keep"}]}
     assert io.commands[-1][0] == (str(root / "deploy_router.sh"),)
+    deployed = False
     adapter.rollback(applied, io=io)
     assert io.files[str(root / "app/models.json")] == original
     assert io.file_modes[str(root / "app/models.json")] == 0o640
@@ -120,6 +129,43 @@ def test_contabo_rejects_any_other_deploy_script(tmp_path):
     root = tmp_path / "contabo-router"
     with pytest.raises(ValueError, match="deploy_router.sh"):
         ContaboOpenAIAdapter(router_root=root, deploy_script=root / "other.sh")
+
+
+def test_contabo_restore_new_candidate_checks_absence_and_canaries_existing_model(tmp_path):
+    root = tmp_path / "contabo-router"
+    seen = []
+
+    def probe(pool, model, kind):
+        seen.append((model, kind))
+        if kind in {"manifest", "models"}:
+            return model != "New/Model.X"
+        return True
+
+    io = FakeIO(probe=probe)
+    original = b'{"openai":{"models":[{"id":"old"}]}}'
+    path = root / "app/models.json"
+    io.files[str(path)] = original
+    io.file_modes[str(path)] = 0o640
+    adapter = ContaboOpenAIAdapter(router_root=root, deploy_script=root / "deploy_router.sh")
+
+    adapter._verify_restore(io, "New/Model.X", original, 0o640)
+
+    assert seen == [("New/Model.X", "manifest"), ("New/Model.X", "models"), ("old", "canary")]
+
+
+def test_contabo_restore_existing_candidate_does_not_require_absence(tmp_path):
+    root = tmp_path / "contabo-router"
+    seen = []
+    io = FakeIO(probe=lambda pool, model, kind: seen.append((model, kind)) or True)
+    original = b'{"openai":{"models":[{"id":"existing"}]}}'
+    path = root / "app/models.json"
+    io.files[str(path)] = original
+    io.file_modes[str(path)] = 0o640
+    adapter = ContaboOpenAIAdapter(router_root=root, deploy_script=root / "deploy_router.sh")
+
+    adapter._verify_restore(io, "existing", original, 0o640)
+
+    assert seen == [("existing", "canary")]
 
 
 class RecordingAdapter(PoolAdapter):

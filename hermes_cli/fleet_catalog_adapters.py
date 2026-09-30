@@ -195,13 +195,12 @@ class ContaboOpenAIAdapter(PoolAdapter):
             raise RuntimeError("models.json byte/mode restoration verification failed")
         restored = json.loads(before.decode("utf-8"))
         ids = [item.get("id") for item in self._model_list(restored)]
-        if candidate in ids:
-            raise RuntimeError("candidate remains after restoration")
         if not ids:
             raise RuntimeError("no pre-existing model available for rollback canary")
-        for kind in ("manifest", "models"):
-            if not io.probe_model(self.pool, candidate, kind):
-                raise RuntimeError(f"rollback {kind} verification failed")
+        if candidate not in ids:
+            for kind in ("manifest", "models"):
+                if io.probe_model(self.pool, candidate, kind):
+                    raise RuntimeError(f"rollback {kind} still serves new candidate")
         if not io.probe_model(self.pool, str(ids[0]), "canary"):
             raise RuntimeError("rollback pre-existing model canary failed")
 
