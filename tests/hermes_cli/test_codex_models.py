@@ -65,6 +65,12 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
+def test_live_verified_gpt_6_1_sol_is_available_offline():
+    """A backend-accepted forward-compatible slug remains visible when discovery is unavailable."""
+    assert "gpt-6.1-sol" in DEFAULT_CODEX_MODELS
+    assert "gpt-6.1-sol" in {model for model, _fallbacks in _FORWARD_COMPAT_TEMPLATE_MODELS}
+
+
 def test_picker_synthesizes_900k_variants_for_verified_slugs():
     """Every live-verified large-context slug gets an explicit ``-900k``
     picker variant directly after its base entry; slugs that genuinely
