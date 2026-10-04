@@ -28,7 +28,17 @@ import { queryClient } from '@/lib/query-client'
 import { useStoresSelector } from '@/lib/use-session-slice'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
+import { atom } from 'nanostores'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+
+// App-level tracker for local-runtime jobs (runtime installs, model
+// downloads). The AUTHORITY is the backend job registry — this store is a
+// cache of it (desktop guide: server truth is cached, not owned). Living at
+// the store layer, not in the settings pane, is what makes a download
+// survive the pane unmounting: anything can start a job, the poller follows
+// it to completion, and completion/failure notify app-wide exactly once.
+
+export const $localRuntimeJobs = atom<readonly LocalRuntimeJob[]>([])
 
 export interface LocalModelsOwner extends LocalModelsScope {
   // Legacy primary routes have no registry pin. Fence them by endpoint instead.
