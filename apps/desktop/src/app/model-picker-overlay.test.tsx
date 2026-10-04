@@ -32,6 +32,11 @@ vi.mock('@/store/session-focus', async () => {
     TILE_PANE_PREFIX
   }
 })
+vi.mock('@/store/local-runtime-jobs', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  $localRuntimeJobs: { get: () => [], listen: () => () => {} },
+  watchLocalRuntimeJobs: vi.fn()
+}))
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} })
