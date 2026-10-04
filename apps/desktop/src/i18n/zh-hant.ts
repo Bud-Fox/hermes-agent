@@ -1,11 +1,21 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introZhHant } from './intro-zh-hant'
+import { zhHantArtifacts } from './zh-hant_artifacts'
+import { zhHantAssistant } from './zh-hant_assistant'
+import { zhHantBoot } from './zh-hant_boot'
+import { zhHantCapabilities } from './zh-hant_capabilities'
+import { zhHantChat } from './zh-hant_chat'
+import { zhHantChrome } from './zh-hant_chrome'
+import { zhHantCommandCenter } from './zh-hant_command_center'
+import { zhHantCommon } from './zh-hant_common'
+import { zhHantConnectors } from './zh-hant_connectors'
+import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHant = defineLocale({
-  catalog: {
-    listView: '清單檢視',
-    cardView: '卡片檢視',
+  skillDeepLink: {
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
     installTo: '安裝至',
@@ -13,183 +23,101 @@ export const zhHant = defineLocale({
     installing: '正在安裝…',
     installComplete: (name: string) => `已安裝「${name}」`,
     destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
-    browse: '瀏覽',
     installed: '已安裝',
-    searchSkills: '搜尋技能',
-    searchPlugins: '搜尋外掛',
-    allSources: '所有來源',
-    allCategories: '所有分類',
-    about: '簡介',
-    author: '作者',
-    source: '來源',
-    category: '分類',
-    version: '版本',
-    platforms: '支援的平台',
-    requires: '相依項目',
-    tools: '工具',
-    hooks: '掛鉤',
-    repository: '程式碼儲存庫',
-    documentation: '文件',
-    noResults: '沒有符合的項目',
-    tryAnother: '請嘗試其他搜尋或清除篩選條件。',
-    clearFilters: '清除篩選條件',
-    loadFailed: '無法載入目錄',
-    retry: '再試一次',
-    more: '顯示更多',
-    pinned: '已審核的提交',
-    snapshotHint: '內容來自 Hermes 目錄。瀏覽時不會連線至來源程式碼儲存庫。',
-    installHint: '安裝前請檢查原始碼。變更將於新的工作階段生效。',
-    results: (count: number) => `${count.toLocaleString('zh-Hant')} 個結果`,
-    back: '返回結果'
+    source: '來源'
   },
-  sessionImport: {
-    title: '從其他應用程式繼續',
-    subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
-    action: '匯入工作階段',
-    readingFrom: '讀取自',
-    connectedComputer: '已連線的電腦',
-    destination: '匯入至',
-    all: '全部',
-    search: '搜尋已載入的工作階段',
-    scanning: '正在尋找對話',
-    scanError: '無法尋找工作階段',
-    scanHelp: '請檢查後端連線並重試。舊版後端可能需要更新。',
-    empty: '找不到對話',
-    emptyHelp: '此後端上的 Claude Code 和 Codex 工作階段將顯示在這裡。',
-    noMatches: '沒有符合的對話',
-    searchHelp: '嘗試其他標題或資料夾，或載入更多工作階段。',
-    skipped: '部分記錄為空白、無法讀取或過大，已略過。',
-    more: '載入更多工作階段',
-    messages: '則訊息',
-    choose: '繼續一段對話',
-    chooseHelp: '選擇工作階段，在匯入 Hermes 前查看歷程記錄。',
-    previewLoading: '正在開啟預覽',
-    previewError: '無法預覽',
-    previewHelp: '來源檔案可能已移動或變更。請重新整理清單後重試。',
-    previewLimit: '預覽已縮短，方便閱讀。匯入時會複製完整對話。',
-    you: '你',
-    snapshot: '此對話已匯入 Hermes。開啟現有副本即可繼續。',
-    copyNotice: '複製對話文字，不變更來源檔案。不包含工具輸出和推理內容。',
-    importing: '正在匯入…',
-    open: '在 Hermes 中開啟',
-    continue: '在 Hermes 中繼續',
-    importError: '無法匯入此對話。'
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
   },
-  common: {
-    apply: '套用',
-    back: '返回',
-    save: '儲存',
-    saving: '儲存中…',
-    cancel: '取消',
-    change: '變更',
-    choose: '選擇',
-    clear: '清除',
-    close: '關閉',
-    collapse: '收合',
-    confirm: '確認',
-    connect: '連線',
-    connecting: '連線中',
-    continue: '繼續',
-    copied: '已複製',
-    copy: '複製',
-    copyFailed: '複製失敗',
-    delete: '刪除',
-    docs: '文件',
-    done: '完成',
-    error: '錯誤',
-    expand: '展開',
-    failed: '失敗',
-    formatJson: '格式化 JSON',
-    free: '免費',
-    loading: '載入中…',
-    notSet: '未設定',
-    refresh: '重新整理',
-    remove: '移除',
-    replace: '取代',
-    retry: '重試',
-    run: '執行',
-    send: '傳送',
-    set: '設定',
-    skip: '略過',
-    update: '更新',
-    tryHint: term => `試試「${term}」`,
-    on: '開啟',
-    off: '關閉'
+  sharedMetrics: {
+    consentTitle: '協助改進 Hermes？',
+    consentBody:
+      '共享指標只包含有上限的計數，絕不包含提示詞、檔案、路徑或錯誤文字。收集僅在本機進行；傳送給 Nous 需要另行同意。',
+    whatIsCollected: '收集哪些內容',
+    collectedIntro: '僅限有上限的計數：',
+    collectedActivity: '活動、工作階段長度、結果和錯誤類別',
+    collectedModels: '模型路由和 token 總量',
+    collectedNames: '內建工具、指令和目錄項名稱',
+    collectedMilestones: '分組的設定計數',
+    collectedReliability: '更新結果與耗時、當機、啟動與回覆速度、訊息平台狀態',
+    collectedUsage:
+      'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
+    collectedMachine:
+      '概略的機器資訊：記憶體範圍、GPU 類型、Hermes 版本新舊與發行通道、落後的更新數、是否使用本機模型伺服器',
+    installId:
+      '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',
+    consentWindow:
+      '只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送——你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。',
+    readDocs: '查看完整說明',
+    share: '收集並傳送給 Nous',
+    local: '僅在本機收集',
+    off: '不用了',
+    changeLater: '你可以隨時在 設定 → 安全性 中變更。',
+    saveFailed: '無法儲存你的選擇',
+    collectLabel: '收集使用統計',
+    collectDesc: '在此裝置上保存有上限的計數。絕不包含提示詞、檔案、路徑或錯誤文字。',
+    sendLabel: '向 Nous 傳送使用統計',
+    sendDesc: '將每日資料包上傳到 Nous 遙測服務。只傳送同意時段內的資料。需要先開啟收集。',
+    unavailable: '請更新 Hermes 後端以變更此設定。',
+    stripBody: '僅限有界計數器，絕不包含提示詞或檔案。',
+    stripChoices: { share: '傳送給 Nous', local: '僅限本機', off: '不用了' },
+    stripDetails: '詳細資訊'
   },
-
-  fileMenu: {
-    revealFinder: '在 Finder 中顯示',
-    revealExplorer: '在檔案總管中顯示',
-    revealFileManager: '開啟所在資料夾',
-    revealInSidebar: '在檔案樹中顯示',
-    copyPath: '複製路徑',
-    copyRelativePath: '複製相對路徑',
-    download: '下載',
-    downloadSaved: '已儲存',
-    downloadFailed: '下載失敗',
-    rename: '重新命名…',
-    delete: '刪除',
-    renameTitle: '重新命名',
-    renameLabel: '新名稱',
-    deleteTitle: name => `刪除 ${name}？`,
-    deleteBody: '將移至垃圾桶，你可以從那裡還原。',
-    pathCopied: '已複製路徑'
+  intro: introZhHant,
+  sessionImport: zhHantConnectors.sessionImport,
+  common: zhHantCommon.common,
+  fileMenu: zhHantChrome.fileMenu,
+  boot: zhHantBoot.boot,
+  notifications: zhHantDiagnostics.notifications,
+  remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,
+  billingBlock: zhHantCommon.billingBlock,
+  sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
+  titlebar: zhHantChrome.titlebar,
+  language: zhHantSettings.language,
+  settings: zhHantSettings.settings,
+  skills: zhHantCapabilities.skills,
+  starmap: zhHantCapabilities.starmap,
+  agents: zhHantCapabilities.agents,
+  commandCenter: zhHantCommandCenter.commandCenter,
+  messaging: zhHantCommandCenter.messaging,
+  profiles: zhHantCommandCenter.profiles,
+  modelAssignment: {
+    saveFailed: 'Hermes 未儲存該模型變更。',
+    confirmTitle: '模型選擇警告',
+    confirmDetail: '僅在你接受此權衡時確認。',
+    confirmAction: '確認',
+    declined: '已取消模型變更 — 你拒絕了資料訓練層級警告。'
   },
-
-  boot: {
-    ready: 'Hermes Desktop 已就緒',
-    desktopBootFailedWithMessage: message => `桌面啟動失敗：${message}`,
-    steps: {
-      connectingGateway: '正在連線桌面閘道',
-      loadingSettings: '正在載入 Hermes 設定',
-      loadingSessions: '正在載入最近工作階段',
-      retryingRemoteBackend: '正在重新連線遠端 Hermes 後端…',
-      startingDesktopConnection: '正在啟動桌面連線',
-      startingHermesDesktop: '正在啟動 Hermes Desktop…'
+  cron: zhHantCommandCenter.cron,
+  artifacts: zhHantArtifacts.artifacts,
+  artifactCard: zhHantArtifacts.artifactCard,
+  artifactPreview: zhHantArtifacts.artifactPreview,
+  sidebar: zhHantChrome.sidebar,
+  composer: zhHantChat.composer,
+  statusStack: zhHantChat.statusStack,
+  updates: zhHantBoot.updates,
+  guidedGreeting: zhHantBoot.guidedGreeting,
+  install: zhHantBoot.install,
+  onboarding: zhHantBoot.onboarding,
+  modelPicker: zhHantSettings.modelPicker,
+  modelVisibility: zhHantSettings.modelVisibility,
+  shell: zhHantChrome.shell,
+  rightSidebar: zhHantChrome.rightSidebar,
+  preview: zhHantArtifacts.preview,
+  interfaceMode: {
+    title: '介面模式',
+    hint: '只改變顯示的內容，不改變 Hermes 的能力。',
+    sessionNote: '由簡潔模式設定。此處的變更僅在本次工作階段內生效；切換到進階模式即可保留為你的設定。',
+    simple: {
+      label: '簡潔',
+      description: '用於與 Hermes 對話。只有側邊欄和聊天；沒有終端機、檔案或差異面板。'
     },
-    errors: {
-      backgroundExited: 'Hermes 背景程序已結束。',
-      backgroundExitedDuringStartup: 'Hermes 背景程序在啟動期間結束。',
-      backendStopped: '後端已停止',
-      desktopBootFailed: '桌面啟動失敗',
-      gatewayConnectionLost: '與閘道的連線已中斷',
-      gatewayConnectionLostDetail:
-        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
-      gatewaySignInRequired: '需要閘道登入',
-      ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
-    },
-    failure: {
-      title: 'Hermes 無法啟動',
-      description: '背景閘道未啟動。請嘗試下面的復原步驟。這裡的操作不會刪除您的聊天或設定。',
-      remoteTitle: '需要重新登入遠端閘道',
-      remoteDescription: '您的遠端閘道工作階段已過期。請重新登入以重新連線。這裡的操作不會刪除您的聊天或設定。',
-      retry: '重試',
-      repairInstall: '修復安裝',
-      useLocalGateway: '使用本機閘道',
-      gatewaySettings: '閘道設定',
-      back: '返回',
-      openLogs: '開啟記錄',
-      repairHint: '修復會重新執行安裝程式，在新機器上可能需要幾分鐘。',
-      remoteSignInHint: signInLabel =>
-        `先登出已儲存的遠端瀏覽器工作階段，然後開啟${signInLabel}。使用本機閘道可切換至內建後端。`,
-      signOutAndSignIn: '登出並重新登入',
-      remoteFailureHint: '在「閘道設定」中檢查閘道 URL 與登入，或切換至本機閘道。',
-      cloudDownTitle: 'Nous Cloud 代理已停機',
-      cloudDownDescription:
-        '此閘道連線的 Nous 託管雲端代理正在回傳伺服器錯誤。無法在此處重新啟動——請檢查其狀態、切換至本機閘道，或取得支援。',
-      cloudDownHint: '使用下方按鈕開啟 Nous Portal（檢視執行個體狀態與操作）或加入 Discord 取得支援。',
-      cloudDownCheckPortal: '查看 Portal 狀態',
-      cloudDownDiscord: '在 Discord 取得協助',
-      hideRecentLogs: '隱藏最近記錄',
-      showRecentLogs: '顯示最近記錄',
-      signedInTitle: '已登入',
-      signedInMessage: '正在重新連線至遠端閘道…',
-      signInIncompleteTitle: '登入未完成',
-      signInIncompleteMessage: '登入視窗在驗證完成前關閉。',
-      signInFailed: '登入失敗',
-      signInToRemoteGateway: '登入遠端閘道',
-      signInWithProvider: provider => `使用 ${provider} 登入`,
-      identityProvider: '您的身分提供方'
+    advanced: {
+      label: '進階',
+      description: '面向開發者。終端機、檔案、差異、狀態列和版面配置，按你的設定顯示。'
     }
   },
 
@@ -3681,5 +3609,13 @@ export const zhHant = defineLocale({
       description: '顯示行動裝置側邊欄。',
       toggle: open => `${open ? '顯示' : '隱藏'}側邊欄`
     }
-  }
+  },
+  zones: zhHantChrome.zones,
+  contextMenu: zhHantChrome.contextMenu,
+  assistant: zhHantAssistant.assistant,
+  prompts: zhHantChat.prompts,
+  desktop: zhHantChat.desktop,
+  errors: zhHantDiagnostics.errors,
+  tips: zhHantChat.tips,
+  ui: zhHantCommon.ui
 })

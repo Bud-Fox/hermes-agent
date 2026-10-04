@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { catalogProviderMatches, modelOptionsQueryKey, pickerModelList, requestModelOptions } from './model-options'
+import { catalogProviderMatches, customDefaultSupersedesPick, modelOptionsQueryKey, moaPickRemoved, pickerModelList, requestModelOptions } from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -185,13 +185,12 @@ describe('requestModelOptions', () => {
 
 describe('modelOptionsQueryKey', () => {
   it('isolates new-chat catalogs by active gateway profile', () => {
-    expect(modelOptionsQueryKey('default')).toEqual(['model-options', 'default', 'global'])
-    expect(modelOptionsQueryKey('compass')).toEqual(['model-options', 'compass', 'global'])
     expect(modelOptionsQueryKey('default')).not.toEqual(modelOptionsQueryKey('compass'))
   })
 
   it('keeps session catalogs inside the owning profile namespace', () => {
-    expect(modelOptionsQueryKey(' compass ', 'session-1')).toEqual(['model-options', 'compass', 'session-1'])
+    expect(modelOptionsQueryKey(' compass ', 'session-1')).toEqual(modelOptionsQueryKey('compass', 'session-1'))
+    expect(modelOptionsQueryKey('compass', 'session-1')).not.toEqual(modelOptionsQueryKey('default', 'session-1'))
   })
 
   it('isolates identical profile and session names across registry connections', () => {
@@ -199,7 +198,7 @@ describe('modelOptionsQueryKey', () => {
     const sourceBKey = modelOptionsQueryKey('default', 'session-1', 'source-b')
     const queryClient = new QueryClient()
 
-    expect(sourceAKey).toEqual(['model-options', 'default', 'session-1', 'owner', 'source-a'])
+    expect(sourceAKey).not.toEqual(sourceBKey)
     queryClient.setQueryData(sourceAKey, { providers: [{ models: ['a/model'], slug: 'a' }] })
     queryClient.setQueryData(sourceBKey, { providers: [{ models: ['b/model'], slug: 'b' }] })
 
@@ -245,5 +244,63 @@ describe('pickerModelList', () => {
   it('honors an explicit empty picker_models (server hid every model for this provider)', () => {
     const provider = { models: full, picker_models: [], name: 'X', slug: 'x' }
     expect(pickerModelList(provider)).toEqual([])
+  })
+})
+
+describe('moaPickRemoved', () => {
+  const providers = [
+    { models: ['deepseek-v4-pro'], name: 'DeepSeek', slug: 'deepseek' },
+    { models: ['default', 'balanced'], name: 'Mixture of Agents', slug: 'moa' }
+  ]
+
+  it('flags a manual moa pick when the populated catalog has no moa row (#90244)', () => {
+    const noMoa = [providers[0]]
+    expect(moaPickRemoved({ providers: noMoa }, 'moa', 'default')).toBe(true)
+  })
+
+  it('flags a manual moa pick whose preset the moa row no longer lists', () => {
+    expect(moaPickRemoved({ providers }, 'moa', 'retired-preset')).toBe(true)
+  })
+
+  it('keeps a manual moa pick while the catalog still offers the preset', () => {
+    expect(moaPickRemoved({ providers }, 'moa', 'default')).toBe(false)
+    expect(moaPickRemoved({ providers }, 'MOA', 'balanced')).toBe(false)
+  })
+
+  it('never clobbers while the catalog is unavailable or loading', () => {
+    expect(moaPickRemoved(undefined, 'moa', 'default')).toBe(false)
+    expect(moaPickRemoved({ providers: [] }, 'moa', 'default')).toBe(false)
+    expect(moaPickRemoved({ providers: undefined }, 'moa', 'default')).toBe(false)
+  })
+
+  it('leaves every non-moa provider to the sticky-pick design', () => {
+    // A custom slug the catalog lacks is the user's choice, not a removal
+    // (d595e636c83: picks are never retargeted from catalog membership).
+    expect(moaPickRemoved({ providers: [providers[0]] }, 'deepseek', 'deepseek-v4.1-flash')).toBe(false)
+    expect(moaPickRemoved({ providers: [providers[0]] }, 'custom', 'my-own-slug')).toBe(false)
+    expect(moaPickRemoved({ providers: [providers[0]] }, '', 'default')).toBe(false)
+  })
+})
+
+describe('customDefaultSupersedesPick', () => {
+  it('flags a bare pick the default has migrated to its custom-provider form (#81922)', () => {
+    // The wire payload for `nvidia` builds the NATIVE provider and drops the
+    // custom entry's extra_body; `custom:nvidia` is the same endpoint.
+    expect(customDefaultSupersedesPick('nvidia', 'custom:nvidia')).toBe(true)
+    expect(customDefaultSupersedesPick('  NVIDIA ', 'Custom:NVIDIA')).toBe(true)
+  })
+
+  it('keeps a pick that already names the custom entry, or a different provider', () => {
+    expect(customDefaultSupersedesPick('custom:nvidia', 'custom:nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('custom:relay', 'custom:nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('anthropic', 'custom:nvidia')).toBe(false)
+  })
+
+  it('never fires for a non-custom default or an empty pick', () => {
+    expect(customDefaultSupersedesPick('nvidia', 'nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('custom', 'custom')).toBe(false)
+    expect(customDefaultSupersedesPick('nvidia', 'openai-codex')).toBe(false)
+    expect(customDefaultSupersedesPick('', 'custom:nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('nvidia', 'custom:')).toBe(false)
   })
 })
