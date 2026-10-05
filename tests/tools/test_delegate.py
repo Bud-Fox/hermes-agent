@@ -2101,3 +2101,99 @@ class TestAtomicChildCredentialBundle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerTaskRouteOverride(unittest.TestCase):
+    """Per-task model/provider override with an allowlist (delegation.routes).
+
+    A task may carry `model` and `provider`; the pair must resolve via the
+    runtime provider system AND be present in the delegation.routes allowlist
+    (config-defined rails). Without routes configured, per-task overrides are
+    rejected outright (secure default — no silent inheritance escape).
+    """
+
+    def _norm(self, tasks, cfg=None):
+        from tools.delegate_tool_tasks import _normalize_task_list
+        task_list, err = _normalize_task_list(None, None, tasks, None, "leaf", 5)
+        if err:
+            return None, err
+        return task_list, None
+
+    def test_per_task_model_provider_passes_validation(self):
+        task_list, err = self._norm([{"goal": "do x", "model": "gemini-3.8-flash", "provider": "contabo-gemini"}])
+        self.assertIsNone(err)
+        self.assertEqual(task_list[0]["model"], "gemini-3.8-flash")
+        self.assertEqual(task_list[0]["provider"], "contabo-gemini")
+
+    def test_per_task_provider_without_model_rejected(self):
+        _, err = self._norm([{"goal": "do x", "provider": "contabo-gemini"}])
+        self.assertIsNotNone(err)
+        self.assertIn("model", err)
+
+    def test_per_task_model_without_provider_rejected(self):
+        _, err = self._norm([{"goal": "do x", "model": "gemini-3.8-flash"}])
+        self.assertIsNotNone(err)
+
+    def test_unknown_route_key_rejected(self):
+        _, err = self._norm([{"goal": "do x", "model": "m", "provider": "p", "api_key": " smuggled"}])
+        self.assertIsNotNone(err)
+
+
+class TestResolveTaskRoute(unittest.TestCase):
+    """Route resolution + allowlist enforcement."""
+
+    ROUTES = {
+        "contabo-gemini": {"models": ["gemini-3.8-flash", "gemini-3.7-flash"]},
+        "contabo-nvidia": {"models": ["nvidia/nemotron-3-super-120b-a12b"]},
+    }
+
+    def setUp(self):
+        # Isolate the allowlist: patch the loader so tests never read the real profile config.
+        self._loader_patch = patch("tools.delegate_tool_config._load_routes_allowlist", return_value=self.ROUTES)
+        self._loader_patch.start()
+        self.addCleanup(self._loader_patch.stop)
+
+    def _resolve(self, task, cfg):
+        from tools.delegate_tool_config import _resolve_task_route
+        return _resolve_task_route(task, cfg, _make_mock_parent(depth=0))
+
+    def test_allowed_route_resolves(self):
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
+            mock_resolve.return_value = {
+                "provider": "contabo-gemini",
+                "base_url": "http://194.34.232.59:8790/vendor/gemini/v1",
+                "api_key": "router-key",
+                "api_mode": "chat_completions",
+            }
+            creds, err = self._resolve(
+                {"goal": "x", "model": "gemini-3.8-flash", "provider": "contabo-gemini"},
+                {"routes": self.ROUTES},
+            )
+        self.assertIsNone(err)
+        self.assertEqual(creds["model"], "gemini-3.8-flash")
+        self.assertEqual(creds["provider"], "contabo-gemini")
+        self.assertEqual(creds["base_url"], "http://194.34.232.59:8790/vendor/gemini/v1")
+
+    def test_provider_not_in_allowlist_rejected(self):
+        creds, err = self._resolve(
+            {"goal": "x", "model": "claude-sonnet-5", "provider": "contabo-anthropic"},
+            {"routes": self.ROUTES},
+        )
+        self.assertIsNone(creds)
+        self.assertIsNotNone(err)
+        self.assertIn("contabo-anthropic", err)
+        self.assertIn("allowlist", err)
+
+    def test_model_not_in_provider_allowlist_rejected(self):
+        creds, err = self._resolve(
+            {"goal": "x", "model": "gpt-6.1-sol", "provider": "contabo-gemini"},
+            {"routes": self.ROUTES},
+        )
+        self.assertIsNone(creds)
+        self.assertIsNotNone(err)
+        self.assertIn("gpt-6.1-sol", err)
+
+    def test_task_without_route_returns_empty_override(self):
+        creds, err = self._resolve({"goal": "x"}, {"routes": self.ROUTES})
+        self.assertIsNone(err)
+        self.assertEqual(creds, {})
