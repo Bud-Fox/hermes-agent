@@ -316,6 +316,67 @@ def _merge_request_overrides(runtime_overrides, explicit_overrides):
 _NATIVE_SDK_PROVIDERS = frozenset({"bedrock", "vertex", "google", "google-genai"})
 _EXPLICIT_API_MODES = frozenset({"chat_completions", "codex_responses", "anthropic_messages"})
 
+def _load_routes_allowlist() -> Dict[str, Dict[str, Any]]:
+    """The ``delegation.routes`` allowlist section: {provider: {models: [...], ...}}.
+
+    Read-only; empty dict when unset. Per-task route overrides are permitted ONLY against
+    providers listed here (and only for models they list) — an explicit config opt-in, so a
+    stale/revoked provider (e.g. a depleted key pool) can never be reached by a task override.
+    """
+    if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+        try:
+            from cli import CLI_CONFIG
+            cfg = CLI_CONFIG.get("delegation") or {}
+            routes = cfg.get("routes")
+            return routes if isinstance(routes, dict) else {}
+        except Exception:
+            return {}
+    try:
+        from hermes_cli.config import load_config_readonly
+        routes = (load_config_readonly().get("delegation") or {}).get("routes")
+        return routes if isinstance(routes, dict) else {}
+    except Exception:
+        return {}
+
+def _resolve_task_route(task: Dict[str, Any], cfg: Dict[str, Any], parent_agent) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """``(creds_override, None)`` for a task carrying a per-task model/provider route, else ``({}, None)``.
+
+    The route MUST be listed in the ``delegation.routes`` allowlist (provider key present, model in its
+    ``models`` list) — otherwise ``(None, error)`` and the whole call fails before any child spawns.
+    Resolution reuses ``_resolve_delegation_credentials`` so allowlisted routes get the exact same
+    endpoint/api_mode/request_overrides semantics as a pinned delegation config.
+    """
+    task_model = str(task.get("model") or "").strip()
+    task_provider = str(task.get("provider") or "").strip()
+    if not task_model and not task_provider:
+        return {}, None
+    routes = _load_routes_allowlist()
+    route_cfg = routes.get(task_provider)
+    if not isinstance(route_cfg, dict):
+        known = ", ".join(sorted(routes)) or "(none configured)"
+        return None, (
+            f"Task route '{task_provider}' is not in the delegation.routes allowlist. "
+            f"Allowed providers: {known}. Add it to delegation.routes in config.yaml, or omit "
+            f"model/provider on the task to inherit the default route."
+        )
+    allowed_models = route_cfg.get("models")
+    if isinstance(allowed_models, list) and allowed_models and task_model not in allowed_models:
+        return None, (
+            f"Model '{task_model}' is not in the delegation.routes allowlist for '{task_provider}'. "
+            f"Allowed models: {', '.join(map(str, allowed_models))}."
+        )
+    route_dict = {"model": task_model, "provider": task_provider}
+    for k in ("base_url", "api_key", "api_mode"):
+        if route_cfg.get(k):
+            route_dict[k] = route_cfg[k]
+    try:
+        creds = _resolve_delegation_credentials(route_dict, parent_agent)
+    except ValueError as exc:
+        return None, f"Task route {task_provider}/{task_model} failed to resolve: {exc}"
+    if not creds.get("model"):
+        creds["model"] = task_model
+    return creds, None
+
 def _require_pinned_command(command: Optional[str], message: str) -> None:
     """A pinned ACP transport command must exist on PATH — refuse loudly rather
     than let the child silently fall back to another transport."""

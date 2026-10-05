@@ -31,8 +31,8 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
+    _inherit_parent_capabilities, _load_config, _load_routes_allowlist, _merge_request_overrides, _resolve_child_credential_pool,
+    _resolve_child_runtime, _resolve_delegation_credentials, _resolve_task_route,
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
@@ -405,26 +405,32 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        # Per-task route override (delegation.routes allowlist) beats the call-level creds.
+        # Resolution failures abort the whole batch BEFORE any child spawns (fail-loud preflight).
+        _task_creds, route_err = _resolve_task_route(t, routing_cfg, parent_agent)
+        if route_err:
+            return [], route_err
+        _creds = {**creds, **_task_creds} if _task_creds else creds
+        _overrides = {
+            "override_provider": _creds["provider"], "override_base_url": _creds["base_url"],
+            "override_api_key": _creds["api_key"], "override_api_mode": _creds["api_mode"],
+            "override_request_overrides": _creds.get("request_overrides"),
+            "override_acp_command": _creds.get("command"),
+            "override_acp_args": _creds.get("args"),
+            "routing_cfg": routing_cfg,
+        }
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -732,6 +738,19 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "model": _p(
+                            "string",
+                            "Optional model override for THIS child (e.g. 'gemini-3.8-flash' for a cheap mechanical "
+                            "subtask, a stronger reasoning model for hard analysis). Must be a model/provider PAIR — "
+                            "pass 'provider' too — and must appear in the delegation.routes allowlist in config.yaml; "
+                            "otherwise the whole call fails before any child spawns. Omit to inherit the default route.",
+                        ),
+                        "provider": _p(
+                            "string",
+                            "Optional provider for THIS child (paired with 'model'; both or neither). Must be listed in "
+                            "delegation.routes in config.yaml — routes outside the allowlist are rejected up front, so "
+                            "dead/revoked providers can never be reached.",
                         ),
                     },
                     "required": ["goal"],

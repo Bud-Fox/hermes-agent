@@ -100,9 +100,35 @@ def _normalize_task_list(
             return None, f"Task {i} must be an object, got {type(task).__name__}."
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
+        route_error = _validate_task_route_fields(i, task)
+        if route_error:
+            return None, route_error
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)
+
+_TASK_ROUTE_FIELDS = ("model", "provider")
+
+def _validate_task_route_fields(index: int, task: Dict[str, Any]) -> Optional[str]:
+    """Per-task model/provider override must come as a PAIR with no extra credential fields.
+
+    A lone model or provider is ambiguous (which endpoint would it resolve against?), and credential
+    fields (api_key/base_url) are trusted-config-only — the model must never supply them via tasks.
+    """
+    present = [f for f in _TASK_ROUTE_FIELDS if str(task.get(f) or "").strip()]
+    if present and len(present) < len(_TASK_ROUTE_FIELDS):
+        missing = [f for f in _TASK_ROUTE_FIELDS if f not in present]
+        return (
+            f"Task {index}: per-task route override requires both 'model' and 'provider' together "
+            f"(missing: {', '.join(missing)}). Omit both to inherit the parent/default delegation route."
+        )
+    smuggled = [k for k in ("api_key", "base_url", "api_mode", "command", "args") if task.get(k)]
+    if smuggled:
+        return (
+            f"Task {index}: fields {', '.join(smuggled)} are trusted-config-only and cannot be set per task. "
+            f"Configure them under delegation.routes in config.yaml instead."
+        )
+    return None
 
 def _coerce_task_schemas(
     task_list: List[Dict[str, Any]], output_schema: Optional[Dict[str, Any]]
