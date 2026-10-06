@@ -26,6 +26,7 @@ class FleetCatalog:
     version: int
     providers: dict[str, dict[str, Any]]
     path: Path
+    delegation: dict[str, Any] | None = None
 
 
 def fleet_root() -> Path:
@@ -66,7 +67,18 @@ def validate_fleet_catalog_payload(raw: Any, path: Path) -> FleetCatalog:
     if not isinstance(providers, dict):
         raise ValueError(f"{path} providers must be a mapping")
     validated = dict(_validate_provider(key, value) for key, value in providers.items())
-    return FleetCatalog(version=1, providers=validated, path=path)
+    policy = None
+    if "delegation" in raw:
+        policy = raw["delegation"]
+        if not isinstance(policy, dict) or set(policy) - {"excluded_providers"}:
+            raise ValueError("fleet delegation must be a mapping with only excluded_providers")
+        excluded = policy.get("excluded_providers", [])
+        if (not isinstance(excluded, list)
+                or any(not isinstance(item, str) or not item for item in excluded)
+                or len(excluded) != len(set(excluded))):
+            raise ValueError("fleet delegation.excluded_providers must be unique non-empty strings")
+        policy = {"excluded_providers": list(excluded)}
+    return FleetCatalog(version=1, providers=validated, path=path, delegation=policy)
 
 
 def load_fleet_catalog() -> FleetCatalog | None:
@@ -89,6 +101,20 @@ def apply_fleet_catalog(config: dict) -> dict:
         return config
     out = copy.deepcopy(config)
     out["providers"] = copy.deepcopy(catalog.providers)
+    if catalog.delegation is not None:
+        delegation = out.get("delegation")
+        if not isinstance(delegation, dict):
+            delegation = {}
+        excluded = set(catalog.delegation["excluded_providers"])
+        delegation["_shared_policy"] = True
+        delegation["routes"] = {
+            provider: {"models": list(value["models"])}
+            for provider, value in catalog.providers.items()
+            if provider not in excluded and value.get("models")
+        }
+        for key in ("model", "provider", "base_url", "api_key", "api_mode"):
+            delegation.pop(key, None)
+        out["delegation"] = delegation
     return out
 
 

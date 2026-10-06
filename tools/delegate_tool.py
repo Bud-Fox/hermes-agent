@@ -159,7 +159,9 @@ def _child_compression_cap_tokens(raw) -> "int | None":
     config errors: warn and treat as unset so a typo never changes compaction behaviour."""
     if raw is None or raw is False or raw == 0:
         return None
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) < _CHILD_CAP_MIN:
+    import math
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+            or (isinstance(raw, float) and not math.isfinite(raw)) or int(raw) < _CHILD_CAP_MIN):
         logger.warning(
             "delegation.compression_threshold_tokens=%r is not a token count >= %d; ignoring it "
             "(children keep the ratio trigger).", raw, _CHILD_CAP_MIN,
@@ -201,6 +203,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_requested_provider: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
 
     # ACP transport overrides from trusted delegation config.
@@ -256,6 +259,7 @@ def _build_child_agent(
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
+        override_requested_provider=override_requested_provider,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -288,47 +292,56 @@ def _build_child_agent(
                     from hermes_state_registry import release_or_close
                     release_or_close(child_session_db)
             raise
-    child._print_fn = getattr(parent_agent, "_print_fn", None)
-    _apply_child_cache_ttl(child)
-    if child_session_db is not None:
-        child._owns_session_db = True  # released by the child's close(), never by the parent
-    # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
-    # reference), and no parent teardown can close it out from under a background child (#81267).
-    child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
-    child._progress_identity_ref = child_session_ref
-    child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
-    child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
-    _apply_child_compression_cap(child, delegation_cfg)
-    # Ownership chain for action=list/steer/stop; weakref so a finished parent
-    # can be collected while a detached child record lingers in the registry.
+    # Transfer persistence ownership before ANY fallible post-constructor setup.
     try:
-        child._delegate_parent_ref = weakref.ref(parent_agent)
-    except TypeError:
-        child._delegate_parent_ref = None  # non-weakref-able test doubles
-    # Sidebar marker: subagent sessions stay out of session pickers even when a
-    # parent delete orphans them (mirrors /branch's ``_branched_from``).
-    if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
-        child._session_init_model_config["_delegate_from"] = parent_sid
-    # Shared pool lets children rotate credentials on rate limits.
-    child_pool = _resolve_child_credential_pool(
-        rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
-    )
-    if child_pool is not None:
-        child._credential_pool = child_pool
-
-    _attach_child(parent_agent, child)  # interrupt propagation
-    # spawn_requested now — the child may queue for seconds when the pool is
-    # saturated — then the subagent_start lifecycle hook.
-    _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
-    with _quiet("subagent_start hook invocation failed", exc_info=True):
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "subagent_start", parent_session_id=parent_sid,
-            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,
-            child_session_id=getattr(child, "session_id", None), child_subagent_id=subagent_id,
-            child_role=effective_role, child_goal=goal,
+        if child_session_db is not None:
+            child._owns_session_db = True
+        child._print_fn = getattr(parent_agent, "_print_fn", None)
+        _apply_child_cache_ttl(child)
+        # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
+        # reference), and no parent teardown can close it out from under a background child (#81267).
+        child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
+        child._progress_identity_ref = child_session_ref
+        child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+        child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+        _apply_child_compression_cap(child, delegation_cfg)
+        # Ownership chain for action=list/steer/stop; weakref so a finished parent
+        # can be collected while a detached child record lingers in the registry.
+        try:
+            child._delegate_parent_ref = weakref.ref(parent_agent)
+        except TypeError:
+            child._delegate_parent_ref = None  # non-weakref-able test doubles
+        # Sidebar marker: subagent sessions stay out of session pickers even when a
+        # parent delete orphans them (mirrors /branch's ``_branched_from``).
+        if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+            child._session_init_model_config["_delegate_from"] = parent_sid
+        # Shared pool lets children rotate credentials on rate limits.
+        child_pool = _resolve_child_credential_pool(
+            rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
         )
-    return child
+        if child_pool is not None:
+            child._credential_pool = child_pool
+
+        _attach_child(parent_agent, child)  # interrupt propagation
+        # spawn_requested now — the child may queue for seconds when the pool is
+        # saturated — then the subagent_start lifecycle hook.
+        _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
+        with _quiet("subagent_start hook invocation failed", exc_info=True):
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "subagent_start", parent_session_id=parent_sid,
+                parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,
+                child_session_id=getattr(child, "session_id", None), child_subagent_id=subagent_id,
+                child_role=effective_role, child_goal=goal,
+            )
+        return child
+    except BaseException:
+        from tools.delegate_tool_child_run import _detach_child
+        with _quiet("Could not detach failing delegation child"):
+            _detach_child(parent_agent, child)
+        with _quiet("Could not close failing delegation child"):
+            child.close()
+        raise
 
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
@@ -406,24 +419,30 @@ def _build_children(
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
     children = []
+    resolved = []
+    for task in task_list:
+        task_creds, route_err = _resolve_task_route(task, routing_cfg, parent_agent)
+        if route_err:
+            return [], route_err
+        resolved.append({**creds, **task_creds} if task_creds else creds)
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
-        # Per-task route override (delegation.routes allowlist) beats the call-level creds.
-        # Resolution failures abort the whole batch BEFORE any child spawns (fail-loud preflight).
-        _task_creds, route_err = _resolve_task_route(t, routing_cfg, parent_agent)
-        if route_err:
-            return [], route_err
-        _creds = {**creds, **_task_creds} if _task_creds else creds
+        # Every route has been preflighted before constructing any child.
+        _creds = resolved[i]
         _overrides = {
-            "override_provider": _creds["provider"], "override_base_url": _creds["base_url"],
+            "override_provider": _creds.get("runtime_provider") or _creds["provider"],
+            "override_base_url": _creds["base_url"],
             "override_api_key": _creds["api_key"], "override_api_mode": _creds["api_mode"],
             "override_request_overrides": _creds.get("request_overrides"),
+            "override_requested_provider": _creds.get("requested_provider"),
             "override_acp_command": _creds.get("command"),
             "override_acp_args": _creds.get("args"),
-            "routing_cfg": routing_cfg,
+            # A task's exact reviewer/provider choice must never silently switch.
+            "routing_cfg": ({**routing_cfg, "fallback_providers": []}
+                            if "model" in t or "provider" in t else routing_cfg),
         }
         try:
             child = _build_child_preserving_parent_tools(
@@ -432,7 +451,13 @@ def _build_children(
                 model=_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_overrides,
             )
-        except ValueError as exc:
+        except Exception as exc:
+            from tools.delegate_tool_child_run import _detach_child
+            for _, _, built in children:
+                with _quiet("Could not detach aborted delegation child"):
+                    _detach_child(parent_agent, built)
+                with _quiet("Could not close aborted delegation child"):
+                    built.close()
             return [], str(exc)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
@@ -510,7 +535,11 @@ def delegate_task(
     background = is_truthy_value(background, default=False) if background is not None else False
 
     depth = getattr(parent_agent, "_delegate_depth", 0)
-    max_spawn = _get_max_spawn_depth()
+    try:
+        max_spawn = _get_max_spawn_depth()
+        cfg = _load_config()
+    except ValueError as exc:
+        return tool_error(str(exc))
     if depth >= max_spawn:
         return tool_error(
             f"Delegation depth limit reached (depth={depth}, max_spawn_depth={max_spawn}). Raise "
@@ -518,7 +547,6 @@ def delegate_task(
             f"multiplies API cost)."
         )
 
-    cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
@@ -653,11 +681,26 @@ def _build_tasks_param_description() -> str:
         max_children = _get_max_concurrent_children()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    import json
+    routes = _load_config().get("routes")
+    pairs = []
+    if isinstance(routes, dict):
+        for provider, entry in routes.items():
+            models = entry.get("models") if isinstance(entry, dict) else None
+            if (isinstance(provider, str) and provider and isinstance(models, list) and models
+                    and all(isinstance(model, str) and model for model in models)):
+                pairs.extend({"provider": provider, "model": model} for model in models)
+    route_help = (
+        " Permitted exact provider/model pairs (static membership, not runtime readiness): "
+        + json.dumps(pairs, ensure_ascii=False)
+        + ". Choose for task quality/cost KPI; the parent provider is preferred, not mandatory. "
+        "Omit both IDs to inherit the parent/default route. Credentials are checked before construction."
+    )
     return (
         f"The task(s), up to {max_children} in parallel for this user (set "
         "via delegation.max_concurrent_children). Each entry spawns one "
         "subagent with isolated context and terminal session; a single task "
-        "is a one-entry array. Required when spawning."
+        "is a one-entry array. Required when spawning." + route_help
     )
 
 def _build_dynamic_schema_overrides() -> dict:
@@ -750,7 +793,7 @@ DELEGATE_TASK_SCHEMA = {
                             "string",
                             "Optional provider for THIS child (paired with 'model'; both or neither). Must be listed in "
                             "delegation.routes in config.yaml — routes outside the allowlist are rejected up front, so "
-                            "dead/revoked providers can never be reached.",
+                            "static membership does not establish live provider readiness.",
                         ),
                     },
                     "required": ["goal"],

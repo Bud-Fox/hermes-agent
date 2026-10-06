@@ -346,11 +346,17 @@ def _resolve_task_route(task: Dict[str, Any], cfg: Dict[str, Any], parent_agent)
     Resolution reuses ``_resolve_delegation_credentials`` so allowlisted routes get the exact same
     endpoint/api_mode/request_overrides semantics as a pinned delegation config.
     """
-    task_model = str(task.get("model") or "").strip()
-    task_provider = str(task.get("provider") or "").strip()
-    if not task_model and not task_provider:
+    task_model = task.get("model")
+    task_provider = task.get("provider")
+    if "model" not in task and "provider" not in task:
         return {}, None
-    routes = _load_routes_allowlist()
+    if (not isinstance(task_model, str) or not task_model
+            or not isinstance(task_provider, str) or not task_provider):
+        return None, "Task route requires both literal model and provider IDs."
+    if any(char.isspace() for value in (task_model, task_provider) for char in value):
+        return None, "Task route IDs must not contain whitespace."
+    routes = cfg.get("routes")
+    routes = routes if isinstance(routes, dict) else {}
     route_cfg = routes.get(task_provider)
     if not isinstance(route_cfg, dict):
         known = ", ".join(sorted(routes)) or "(none configured)"
@@ -360,7 +366,10 @@ def _resolve_task_route(task: Dict[str, Any], cfg: Dict[str, Any], parent_agent)
             f"model/provider on the task to inherit the default route."
         )
     allowed_models = route_cfg.get("models")
-    if isinstance(allowed_models, list) and allowed_models and task_model not in allowed_models:
+    if (not isinstance(allowed_models, list) or not allowed_models
+            or any(not isinstance(model, str) or not model for model in allowed_models)):
+        return None, f"Invalid delegation.routes models for '{task_provider}'; explicit non-empty models required."
+    if task_model not in allowed_models:
         return None, (
             f"Model '{task_model}' is not in the delegation.routes allowlist for '{task_provider}'. "
             f"Allowed models: {', '.join(map(str, allowed_models))}."
@@ -431,6 +440,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     return _credential_bundle(
         v["model"], provider, v["base_url"], v["api_key"], api_mode,
         _merge_request_overrides(request_overrides, explicit_request_overrides),
+        requested_provider=v["provider"] or provider,
     )
 
 def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
@@ -448,6 +458,17 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         ) from exc
 
     api_key = runtime.get("api_key", "")
+    if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.auth import has_usable_secret
+        entry = (load_config_readonly().get("providers") or {}).get(configured_provider) or {}
+        key_env = entry.get("key_env") if isinstance(entry, dict) else None
+        if key_env and not (callable(api_key) or (
+                has_usable_secret(api_key) and api_key.strip().lower() != "no-key-required")):
+            raise ValueError(
+                f"Delegation provider '{configured_provider}' requires usable credentials via {key_env}; "
+                "runtime resolved only an empty/placeholder key."
+            )
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
@@ -477,6 +498,8 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         runtime.get("base_url"), api_key, runtime.get("api_mode"),
         _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides) or {},
         command=pinned_command, args=list(runtime.get("args") or []),
+        requested_provider=configured_provider,
+        runtime_provider=runtime.get("provider"),
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -511,6 +534,10 @@ def _load_config() -> dict:
             cfg = load_config_readonly().get("delegation") or {}
             if isinstance(cfg, dict):
                 return cfg
+        except ValueError:
+            # The shared catalog/profile loader is authoritative: invalid policy
+            # must never resurrect a stale legacy pin.
+            raise
         except Exception:
             pass
     try:
@@ -539,9 +566,34 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
     disables fallback either way. Malformed entries are dropped by the canonical normalizer.
     Same rule as a pinned cron job (``cron/scheduler.py::_job_fallback_chain``).
     """
+    inherited = getattr(parent_agent, "_fallback_chain", None)
+    declared = routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None
+    if isinstance(routing_cfg, dict) and routing_cfg.get("_shared_policy") is True:
+        routes = routing_cfg.get("routes")
+        routes = routes if isinstance(routes, dict) else {}
+
+        def permitted(raw):
+            entries = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+            allowed = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                provider, model = entry.get("provider"), entry.get("model")
+                if (not isinstance(provider, str) or not isinstance(model, str)
+                        or not provider or not model
+                        or any(char.isspace() for value in (provider, model) for char in value)):
+                    continue
+                route = routes.get(provider)
+                models = route.get("models") if isinstance(route, dict) else None
+                if isinstance(models, list) and model in models:
+                    allowed.append(dict(entry))
+            return allowed
+
+        # Filter raw literals BEFORE canonical normalization strips whitespace.
+        inherited = permitted(inherited)
+        declared = permitted(declared) if declared is not None else None
     return scoped_fallback_chain(
-        getattr(parent_agent, "_fallback_chain", None),
-        routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None,
+        inherited, declared,
         pinned=pinned, owner="delegation")
 
 
@@ -550,6 +602,7 @@ def _resolve_child_runtime(
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
     routing_cfg: Optional[Dict[str, Any]] = None,
+    override_requested_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -619,7 +672,7 @@ def _resolve_child_runtime(
 
     # A named provider identity is endpoint-scoped. Preserve it only when the
     # child inherits the exact parent route; an override owns its final identity.
-    effective_requested_provider = effective_provider
+    effective_requested_provider = override_requested_provider or effective_provider
     if not override_provider and not override_base_url and not override_acp_command:
         effective_requested_provider = (
             getattr(parent_agent, "requested_provider", None) or effective_provider
