@@ -29,6 +29,7 @@ import {
   setVisibleModels
 } from '@/store/model-visibility'
 import { $defaultReasoningEffort } from '@/store/session'
+import { bindSharedPicker } from '@/store/shared-picker'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
@@ -43,6 +44,11 @@ beforeAll(() => {
 
 const getGlobalModelOptions = vi.fn()
 const closeMenu = vi.fn()
+
+vi.mock('@/lib/model-options', async importOriginal => ({
+  ...await importOriginal<Record<string, unknown>>(),
+  requestModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args)
+}))
 
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
@@ -63,7 +69,13 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 
-beforeEach((): void => {
+beforeEach(async () => {
+  let preferences = { version: 1, revision: 0, initialized: true, favorites: [] as string[], visibility: { visible: null, known: null } as { visible: string[] | null; known: string[] | null }, custom_models: [] }
+  await bindSharedPicker('local:default', async (_method, params) => {
+    if (params) {preferences = { ...preferences, ...params, revision: preferences.revision + 1 } as typeof preferences}
+
+    return preferences
+  })
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   window.localStorage.clear()
@@ -86,6 +98,25 @@ afterEach(() => {
   queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   $defaultReasoningEffort.set('')
   vi.clearAllMocks()
+})
+
+describe('shared picker owner controls', () => {
+  it('removes favorite and model controls from A after B becomes the renderer authority', async () => {
+    const writes: unknown[] = []
+    const state = { version: 1, revision: 0, initialized: true, favorites: [] as string[], visibility: { visible: null, known: null }, custom_models: [] }
+    await bindSharedPicker('a:default', async (_method, params) => { if (params) {writes.push(params)};
+
+ return state })
+    renderMenu({}, 'a')
+    expect(await screen.findByText('Gemini 3.1 Pro')).toBeTruthy()
+    await act(async () => { await bindSharedPicker('b:default', async (_method, params) => { if (params) {writes.push(params)};
+
+ return state }) })
+    expect(await screen.findByText('This picker belongs to another connection. Close and reopen it before editing shared models.')).toBeTruthy()
+    expect(screen.queryByText('Gemini 3.1 Pro')).toBeNull()
+    expect(screen.queryByRole('button', { name: /favorite/i })).toBeNull()
+    expect(writes).toEqual([])
+  })
 })
 
 describe('model menu row decorations (MODEL_MENU_ROW_AREA)', () => {
@@ -195,7 +226,7 @@ describe('the reasoning-effort badge (#51833)', () => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
+function renderMenu(current: Partial<ModelMenuController['current']> = {}, ownerConnectionId?: string) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -213,7 +244,7 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
       <ModelMenuCloseContext.Provider value={closeMenu}>
         <DropdownMenu open>
           <DropdownMenuContent>
-            <ModelCatalogMenu controller={controller} />
+            <ModelCatalogMenu controller={controller} ownerConnectionId={ownerConnectionId} />
           </DropdownMenuContent>
         </DropdownMenu>
       </ModelMenuCloseContext.Provider>
@@ -229,7 +260,7 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
 // which is exactly the drift extracting this component was meant to prevent.
 describe('the catalog owns model curation', () => {
   it('honours the stored Edit Models shortlist', async () => {
-    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
+    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]), [{ models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' }])
 
     renderMenu()
 
@@ -238,7 +269,7 @@ describe('the catalog owns model curation', () => {
   })
 
   it('still finds a hidden model by search — curation narrows the default view, not the catalog', async () => {
-    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
+    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]), [{ models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' }])
 
     renderMenu()
     await screen.findByText('Gemini 2.5')

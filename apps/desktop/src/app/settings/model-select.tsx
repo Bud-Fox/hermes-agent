@@ -7,8 +7,9 @@ import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, Sele
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { rememberSharedCustomModel } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
-import { addCustomModel, customModelSlug } from '@/store/custom-models'
+import { customModelSlug } from '@/store/custom-models'
 
 import { CONTROL_TEXT } from './constants'
 
@@ -88,7 +89,7 @@ export function ModelSelect({
     }
 
     if (!models.includes(slug)) {
-      addCustomModel(providerSlug, slug, provider)
+      void rememberSharedCustomModel(providerSlug, slug, provider)
     }
   }
 

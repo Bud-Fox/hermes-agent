@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { catalogProviderMatches, customDefaultSupersedesPick, modelOptionsQueryKey, moaPickRemoved, pickerModelList, requestModelOptions } from './model-options'
+import { catalogProviderMatches, customDefaultSupersedesPick, moaPickRemoved, modelOptionsQueryKey, pickerModelList, requestModelOptions } from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -302,5 +302,82 @@ describe('customDefaultSupersedesPick', () => {
     expect(customDefaultSupersedesPick('nvidia', 'openai-codex')).toBe(false)
     expect(customDefaultSupersedesPick('', 'custom:nvidia')).toBe(false)
     expect(customDefaultSupersedesPick('nvidia', 'custom:')).toBe(false)
+  })
+})
+
+describe('shared picker binding identity', () => {
+  const prefs = { version: 1, revision: 0, initialized: true, favorites: [] as string[], visibility: { visible: null, known: null }, custom_models: [] }
+  const catalog = { providers: [{ models: ['m'], name: 'P', slug: 'p' }] }
+
+  afterEach(async () => {
+    const { setApiRequestConnection } = await import('@/api/client')
+    setApiRequestConnection(null)
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    vi.clearAllMocks()
+  })
+
+  it('labels a routed request without an owner id as the ambient connection, never local', async () => {
+    const { setApiRequestConnection } = await import('@/api/client')
+    const { $sharedPickerStatus } = await import('@/store/shared-picker')
+    setApiRequestConnection('remote-b')
+    const request = vi.fn(async (method: string) => (method === 'model.options' ? catalog : prefs)) as never
+    await requestModelOptions({ request })
+    expect($sharedPickerStatus.get()).toEqual({ owner: 'remote-b:default', ready: true, shared: true })
+  })
+
+  it('preserves a pending edit when catalog refresh recreates its preference wrapper', async () => {
+    const { setFavoriteModels, $favoriteModels } = await import('@/store/favorite-models')
+    let state = { ...prefs }
+
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'model.options') {return catalog}
+
+      if (method === 'model.preferences.update') {state = { ...state, ...params, revision: state.revision + 1 } as typeof state}
+
+      return state
+    })
+
+    await requestModelOptions({ request: request as never, ownerConnectionId: 'refresh-a' })
+    setFavoriteModels(['p::m'])
+    await requestModelOptions({ request: request as never, ownerConnectionId: 'refresh-a' })
+    expect(request.mock.calls.filter(([method]) => method === 'model.preferences.update')).toHaveLength(1)
+    expect($favoriteModels.get()).toEqual(['p::m'])
+  })
+
+  it('does not relabel the ambient socket as a different explicit owner', async () => {
+    const { $sharedPickerStatus, bindSharedPicker } = await import('@/store/shared-picker')
+    await bindSharedPicker('tile-x:default', async () => prefs)
+    const gateway = { request: vi.fn(async (method: string) => (method === 'model.options' ? catalog : prefs)) }
+    await requestModelOptions({ gateway: gateway as never, ownerConnectionId: 'tile-y' })
+    expect(gateway.request.mock.calls.map(([method]) => method)).toEqual(['model.options'])
+    expect($sharedPickerStatus.get()).toEqual({ owner: 'tile-x:default', ready: true, shared: true })
+  })
+
+  it('names the ambient gateway connection, not local, as the owner', async () => {
+    const { setApiRequestConnection } = await import('@/api/client')
+    const { $sharedPickerStatus, sharedPickerOwner } = await import('@/store/shared-picker')
+    setApiRequestConnection('remote-b')
+    const gateway = { request: vi.fn(async (method: string) => (method === 'model.options' ? catalog : prefs)) }
+    await requestModelOptions({ gateway: gateway as never })
+    expect($sharedPickerStatus.get()).toEqual({ owner: 'remote-b:default', ready: true, shared: true })
+    expect(sharedPickerOwner(undefined, undefined)).toBe('remote-b:default')
+  })
+
+  it('pins REST preference writes to the connection that hydrated them', async () => {
+    const { setApiRequestConnection } = await import('@/api/client')
+    const { $sharedPickerStatus } = await import('@/store/shared-picker')
+    const { setFavoriteModels } = await import('@/store/favorite-models')
+
+    const api = vi.fn(async (_request: Record<string, unknown>) => prefs)
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { api }
+    setApiRequestConnection('remote-b')
+    vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(catalog as never)
+    await requestModelOptions({})
+    expect($sharedPickerStatus.get()).toEqual({ owner: 'remote-b:default', ready: true, shared: true })
+    setApiRequestConnection('remote-c')
+    setFavoriteModels(['p::m'])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(api.mock.calls.map(([call]) => [call.method ?? 'GET', call.connectionId])).toEqual([['GET', 'remote-b'], ['POST', 'remote-b']])
   })
 })

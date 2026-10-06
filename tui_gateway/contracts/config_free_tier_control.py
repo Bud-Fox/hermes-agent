@@ -404,6 +404,45 @@ method("shared_metrics.desktop_daily", params=SharedMetricsDesktopDailyParams,
 # ── model.options ─────────────────────────────────────────────────────────────────────────────
 
 
+class PickerVisibility(Result):
+    visible: list[str] | None
+    known: list[str] | None
+
+
+class PickerCustomModel(Result):
+    provider: str
+    model: str
+
+
+class PickerPreferencesResult(Result):
+    version: Literal[1]
+    revision: int
+    initialized: bool
+    favorites: list[str]
+    visibility: PickerVisibility
+    custom_models: list[PickerCustomModel]
+
+
+class PickerPreferencesParams(ProfileParams):
+    session_id: str | None = None
+
+
+class PickerPreferencesUpdateParams(PickerPreferencesParams):
+    expected_revision: int
+    import_once: bool = False
+    # Omitted fields are patches; explicit outer null is invalid (inner
+    # visibility.visible/known null is the documented catalog-default reset).
+    favorites: list[str] = Field(default_factory=list)
+    visibility: PickerVisibility = Field(default_factory=lambda: PickerVisibility(visible=None, known=None))
+    custom_models: list[PickerCustomModel] = Field(default_factory=list)
+
+
+method('model.preferences.get', params=PickerPreferencesParams, result=PickerPreferencesResult,
+       doc='Read installation-shared non-secret picker preferences.')
+method('model.preferences.update', params=PickerPreferencesUpdateParams, result=PickerPreferencesResult,
+       doc='Patch shared picker preferences using revision CAS; stale edits conflict.')
+
+
 class ModelOptionsParams(ProfileParams):
     session_id: str | None = None
     explicit_only: bool = False

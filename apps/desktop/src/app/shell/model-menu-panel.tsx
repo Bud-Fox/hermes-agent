@@ -1,7 +1,7 @@
 import type { ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
@@ -9,7 +9,9 @@ import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import { $currentModelSource } from '@/store/session'
+import { refreshSharedPicker, sharedPickerOwner } from '@/store/shared-picker'
 
 import { ModelCatalogMenu } from './model-catalog-menu'
 import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
@@ -35,6 +37,13 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
   const view = useSessionView()
   const modelSource = useStore($currentModelSource)
   const { activeSessionId, controller } = useModelMenuController(props)
+  useEffect(() => {
+    const refresh = () => { void refreshSharedPicker(sharedPickerOwner(ownerConnectionId, profile)).catch(error => notifyError(error, 'Shared picker preferences could not be refreshed.')) }
+    refresh()
+    window.addEventListener('focus', refresh)
+
+    return () => window.removeEventListener('focus', refresh)
+  }, [ownerConnectionId, profile])
   // Same condition as the pill's pin dot: a draft whose next session.create
   // ships the manual pick instead of the Settings default (#107410).
   const pinnedDraft = view.kind === 'primary' && !activeSessionId && modelSource === 'manual'
@@ -55,6 +64,7 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
 
       const next = await requestModelOptions({
         gateway,
+        ownerConnectionId,
         profile,
         refresh: true,
         request: requestGateway,

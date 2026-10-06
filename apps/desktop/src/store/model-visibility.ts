@@ -1,6 +1,7 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { connectionScoped } from '@/api/client'
 import { persistString, storedString } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
@@ -98,7 +99,8 @@ export const $visibleModels = atom<Set<string> | null>(loadKeySet(STORAGE_KEY))
  *  install, or a store written before the snapshot existed). */
 export const $knownModels = atom<Set<string> | null>(loadKeySet(KNOWN_STORAGE_KEY))
 
-export const $modelVisibilityOpen = atom(false)
+export const $modelVisibilityOpen = atom<boolean>(false)
+export const $modelVisibilityOwner = atom<{ connection?: string; profile: string; sessionId?: string | null } | null>(null)
 
 /** Every collapsed-family key across `providers`. */
 function allFamilyKeys(providers: readonly ModelOptionProvider[]): Set<string> {
@@ -185,7 +187,8 @@ export function resetModelVisibility(): void {
   persistString(KNOWN_STORAGE_KEY, null)
 }
 
-export function setModelVisibilityOpen(open: boolean): void {
+export function setModelVisibilityOpen(open: boolean, context?: { connection?: string; profile: string; sessionId?: string | null }): void {
+  $modelVisibilityOwner.set(open && context ? { ...context, connection: context.connection || connectionScoped().connectionId || 'local' } : null)
   $modelVisibilityOpen.set(open)
 }
 

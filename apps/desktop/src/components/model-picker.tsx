@@ -20,6 +20,9 @@ import {
   useLocalRuntimeJobs,
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
+import { notifyError } from '@/store/notifications'
+import { refreshSharedPicker, sharedPickerOwner } from '@/store/shared-picker'
+import { useSharedPickerGate } from '@/store/shared-picker-gate'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -69,6 +72,7 @@ export function ModelPickerDialog({
   setupProfile,
   contentClassName
 }: ModelPickerDialogProps): ReactElement {
+  const gate = useSharedPickerGate(ownerConnectionId, profile)
   const { t } = useI18n()
   const copy = t.modelPicker
   // Own the search term so we can filter manually. cmdk's built-in
@@ -84,11 +88,22 @@ export function ModelPickerDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
+    refetchOnMount: 'always',
+    queryFn: () => requestModelOptions({ gateway: gw, ownerConnectionId, profile, request, sessionId }),
     enabled: open,
     staleTime: Infinity,
     refetchOnWindowFocus: false
   })
+
+  useEffect(() => {
+    if (!open) {return}
+
+    const refresh = () => { void refreshSharedPicker(sharedPickerOwner(ownerConnectionId, profile)).catch(error => notifyError(error, 'Shared picker preferences could not be refreshed.')) }
+    refresh()
+    window.addEventListener('focus', refresh)
+
+    return () => window.removeEventListener('focus', refresh)
+  }, [open, ownerConnectionId, profile])
 
   // Live load state for the managed local server: which model is loading
   // into memory right now, with a REAL percent (per-tensor callback relayed
@@ -255,6 +270,8 @@ export function ModelPickerDialog({
     setSlugEntry(true)
     searchRef.current?.focus()
   }
+
+  if (gate) {return <Dialog onOpenChange={onOpenChange} open={open}><DialogContent><DialogTitle>{copy.title}</DialogTitle><p role="status">{gate}</p></DialogContent></Dialog>}
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
