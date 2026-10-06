@@ -38,6 +38,8 @@ import {
   toggleModelVisibility
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { sharedPickerOwner, sharedPickerReady } from '@/store/shared-picker'
+import { useSharedPickerGate } from '@/store/shared-picker-gate'
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -46,6 +48,7 @@ interface ModelVisibilityDialogProps {
   open: boolean
   ownerConnectionId?: string
   profile?: string
+  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   sessionId?: string | null
 }
 
@@ -56,8 +59,10 @@ export function ModelVisibilityDialog({
   open,
   ownerConnectionId,
   profile = 'default',
+  request,
   sessionId
 }: ModelVisibilityDialogProps) {
+  const preferenceGate = useSharedPickerGate(ownerConnectionId, profile)
   const { t } = useI18n()
   const copy = t.modelVisibility
   const [search, setSearch] = useState('')
@@ -67,9 +72,15 @@ export function ModelVisibilityDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, profile, sessionId }),
+    refetchOnMount: 'always',
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, ownerConnectionId, profile, request, sessionId }),
     enabled: open
   })
+
+  const gate = preferenceGate ?? (ownerConnectionId && !request
+    ? 'The model catalog owner route is unavailable. Close and reopen this picker.'
+    : modelOptions.isError ? 'The model catalog could not be loaded for this owner. Close and reopen this picker.'
+      : ownerConnectionId && modelOptions.isFetching ? 'The model catalog is loading for this owner.' : null)
 
   const providers = useMemo(
     () =>
@@ -80,7 +91,7 @@ export function ModelVisibilityDialog({
     [modelOptions.data, customModels]
   )
 
-  useEffect(() => seedKnownModels(providers), [providers])
+  useEffect(() => { if (!gate) {seedKnownModels(providers)} }, [gate, providers])
 
   const visible = effectiveVisibleKeys(stored, providers)
 
@@ -101,6 +112,7 @@ export function ModelVisibilityDialog({
     })
 
     if (ok) {
+      if (!sharedPickerReady(sharedPickerOwner(ownerConnectionId, profile))) {return}
       resetModelVisibilityKeepingCustoms(providers)
     }
   }
@@ -118,6 +130,8 @@ export function ModelVisibilityDialog({
   )
 
   const customSlug = hasMatches ? null : customModelCandidate(search, providers)
+
+  if (gate) {return <Dialog onOpenChange={onOpenChange} open={open}><DialogContent><DialogTitle>{copy.title}</DialogTitle><p role="status">{gate}</p></DialogContent></Dialog>}
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>

@@ -9,7 +9,7 @@ import concurrent.futures
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
@@ -23,6 +23,34 @@ from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_s
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
+
+
+@router.get('/api/model/preferences')
+async def get_picker_preferences(profile: Optional[str] = None):
+    from hermes_cli.picker_preferences import get_preferences
+    with _config_profile_scope(profile):
+        try:
+            return get_preferences()
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post('/api/model/preferences')
+async def update_picker_preferences(request: Request, profile: Optional[str] = None):
+    from hermes_cli.picker_preferences import MAX_BODY_BYTES, PreferenceConflict, update_preferences
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail='Preference payload too large')
+    import json
+    with _config_profile_scope(profile):
+        try:
+            return update_preferences(json.loads(body))
+        except PreferenceConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")

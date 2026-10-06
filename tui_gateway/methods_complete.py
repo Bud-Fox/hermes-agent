@@ -369,6 +369,28 @@ def _(rid, params: dict) -> dict:
         include_unconfigured=bool(params.get("include_unconfigured")), refresh=bool(params.get("refresh"))))
 
 
+@method("model.preferences.get")
+@_profile_scoped
+@_catch(5033)
+def _(rid, params: dict) -> dict:
+    from hermes_cli.picker_preferences import get_preferences
+    return _ok(rid, get_preferences())
+
+
+@method("model.preferences.update")
+@_profile_scoped
+@_catch(5033)
+def _(rid, params: dict) -> dict:
+    from hermes_cli.picker_preferences import PreferenceConflict, update_preferences
+    payload = {k: v for k, v in params.items() if k not in {'profile', 'session_id'}}
+    try:
+        return _ok(rid, update_preferences(payload))
+    except PreferenceConflict as exc:
+        return _err(rid, 4090, str(exc))
+    except ValueError as exc:
+        return _err(rid, 4000, str(exc))
+
+
 @method("model.save_key")
 @_profile_scoped
 @_catch(5034)

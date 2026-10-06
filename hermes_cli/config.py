@@ -2341,9 +2341,9 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
     cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is None or cache_sig is None or cached[:8] != cache_sig:
+    if cached is None or cache_sig is None or cached[:len(cache_sig)] != cache_sig:
         return None
-    hit = cached[8]
+    hit = cached[len(cache_sig)]
     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
@@ -2353,7 +2353,7 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
             return None
         except OSError:
             return hit
-    env_snapshot = cached[9] if len(cached) > 9 else {}
+    env_snapshot = cached[len(cache_sig) + 1] if len(cached) > len(cache_sig) + 1 else {}
     if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
         return hit
     return None
@@ -2386,9 +2386,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         hit = _load_config_cache_hit(path_key, cache_sig)
         if hit is not None:
-            from hermes_cli.fleet_catalog import apply_fleet_catalog
-            authoritative = apply_fleet_catalog(hit)
-            return copy.deepcopy(authoritative) if want_deepcopy else authoritative
+            return copy.deepcopy(hit) if want_deepcopy else hit
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -2426,24 +2424,26 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        # The fleet catalog is folded into cache_sig, so the projected dict is what gets cached:
+        # warm hits serve the same authority as a cold load without re-reading the catalog.
+        from hermes_cli.fleet_catalog import apply_fleet_catalog
+        projected = apply_fleet_catalog(expanded)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while
             # load_config_readonly() callers all see the same stable object. The env snapshot
             # records the values this expansion was made against so later loads detect drift.
-            cached_copy = copy.deepcopy(expanded)
+            cached_copy = copy.deepcopy(projected)
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
             _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
             # Readonly path returns the same object later calls will see (identity invariant).
             if not want_deepcopy:
-                from hermes_cli.fleet_catalog import apply_fleet_catalog
-                return apply_fleet_catalog(cached_copy)
+                return cached_copy
         else:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
         # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
-        from hermes_cli.fleet_catalog import apply_fleet_catalog
-        return apply_fleet_catalog(expanded)
+        return projected
 
 
 _SECURITY_COMMENT = """

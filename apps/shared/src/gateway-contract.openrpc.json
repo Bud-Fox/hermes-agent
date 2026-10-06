@@ -1933,6 +1933,42 @@
       }
     },
     {
+      "name": "model.preferences.get",
+      "summary": "Read installation-shared non-secret picker preferences.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PickerPreferencesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PickerPreferencesResult"
+        }
+      }
+    },
+    {
+      "name": "model.preferences.update",
+      "summary": "Patch shared picker preferences using revision CAS; stale edits conflict.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PickerPreferencesUpdateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PickerPreferencesResult"
+        }
+      }
+    },
+    {
       "name": "model.save_key",
       "summary": "Save an API key for a provider and return its refreshed inventory row.",
       "params": [
@@ -21787,6 +21823,200 @@
           "slug"
         ],
         "title": "PetThumbResult",
+        "type": "object"
+      },
+      "PickerCustomModel": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ],
+        "title": "PickerCustomModel",
+        "type": "object"
+      },
+      "PickerPreferencesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "PickerPreferencesParams",
+        "type": "object"
+      },
+      "PickerPreferencesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "initialized": {
+            "title": "Initialized",
+            "type": "boolean"
+          },
+          "favorites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Favorites",
+            "type": "array"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/PickerVisibility"
+          },
+          "custom_models": {
+            "items": {
+              "$ref": "#/components/schemas/PickerCustomModel"
+            },
+            "title": "Custom Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "version",
+          "revision",
+          "initialized",
+          "favorites",
+          "visibility",
+          "custom_models"
+        ],
+        "title": "PickerPreferencesResult",
+        "type": "object"
+      },
+      "PickerPreferencesUpdateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "import_once": {
+            "default": false,
+            "title": "Import Once",
+            "type": "boolean"
+          },
+          "favorites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Favorites",
+            "type": "array"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/PickerVisibility"
+          },
+          "custom_models": {
+            "items": {
+              "$ref": "#/components/schemas/PickerCustomModel"
+            },
+            "title": "Custom Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "PickerPreferencesUpdateParams",
+        "type": "object"
+      },
+      "PickerVisibility": {
+        "additionalProperties": false,
+        "properties": {
+          "visible": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visible"
+          },
+          "known": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Known"
+          }
+        },
+        "required": [
+          "visible",
+          "known"
+        ],
+        "title": "PickerVisibility",
         "type": "object"
       },
       "PingParams": {

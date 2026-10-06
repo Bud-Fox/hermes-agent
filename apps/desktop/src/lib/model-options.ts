@@ -1,6 +1,11 @@
 import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 
+import { capabilityScoped } from '@/api/client'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { addCustomModel } from '@/store/custom-models'
+import { notifyError } from '@/store/notifications'
+import { $sharedPickerStatus, bindSharedPicker, sharedPickerConnection, sharedPickerOwner } from '@/store/shared-picker'
+import type { PickerPreferences } from '@/store/shared-picker-sync'
 
 type CatalogProviderIdentity = Partial<Pick<ModelOptionProvider, 'aliases' | 'name'>> &
   Pick<ModelOptionProvider, 'slug'>
@@ -200,6 +205,7 @@ interface ModelOptionsRequest {
    *  secondary tile does not fall back to the launch profile's models. */
   profile?: null | string
   refresh?: boolean
+  ownerConnectionId?: null | string
   sessionId?: null | string
 }
 
@@ -218,6 +224,21 @@ function hasSelectableModels(options: ModelOptionsResult | null | undefined): bo
   return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
 }
 
+/** Bind shared preferences over the ambient REST route. The scope is captured by the caller
+ *  BEFORE any await, so later writes stay on the installation that hydrated them. */
+async function bindRestSharedPicker(scope: ReturnType<typeof capabilityScoped>, owner: string): Promise<void> {
+  if (!window.hermesDesktop?.api) {return}
+
+  try {
+    await bindSharedPicker(owner, (method, payload) => window.hermesDesktop.api<PickerPreferences>({
+      ...scope, path: '/api/model/preferences',
+      ...(method.endsWith('.update') ? { method: 'POST' as const, body: payload } : {})
+    }), window.hermesDesktop.api)
+  } catch (error) {
+    notifyError(error, 'Shared picker preferences could not be loaded.')
+  }
+}
+
 function restModelOptions(
   explicitOnly: boolean,
   refresh: boolean,
@@ -225,13 +246,51 @@ function restModelOptions(
 ): Promise<ModelOptionsResult> {
   const opts = { explicitOnly, ...(refresh ? { refresh: true } : {}) }
   const profileKey = (profile ?? '').trim()
+  const scope = capabilityScoped(profileKey || undefined)
+  const owner = sharedPickerOwner(null, profileKey)
 
-  return profileKey ? getGlobalModelOptions(opts, profileKey) : getGlobalModelOptions(opts)
+  return (profileKey ? getGlobalModelOptions(opts, profileKey) : getGlobalModelOptions(opts)).then(async options => {
+    await bindRestSharedPicker(scope, owner)
+
+    return options
+  })
+}
+
+/** Settings custom-model entry for the ambient installation. Preferences are installation-wide,
+ *  so any ready binding of that connection accepts the edit; otherwise hydrate FIRST, then
+ *  apply — an edit made before hydration would be overwritten by it. */
+export async function rememberSharedCustomModel(
+  providerSlug: string,
+  slug: string,
+  provider?: ModelOptionProvider
+): Promise<boolean> {
+  const connection = sharedPickerConnection(null)
+
+  const readyHere = () => {
+    const status = $sharedPickerStatus.get()
+
+    return status.ready && status.owner.startsWith(connection + ':')
+  }
+
+  if (!readyHere()) {
+    await bindRestSharedPicker(capabilityScoped(undefined), sharedPickerOwner(null, null))
+  }
+
+  if (!readyHere() || sharedPickerConnection(null) !== connection) {
+    notifyError(new Error('Shared model preferences are unavailable'), 'Custom model was applied but not remembered; retry once preferences load.')
+
+    return false
+  }
+
+  addCustomModel(providerSlug, slug, provider)
+
+  return true
 }
 
 export async function requestModelOptions({
   explicitOnly = true,
   gateway,
+  ownerConnectionId,
   profile,
   refresh = false,
   request,
@@ -265,6 +324,19 @@ export async function requestModelOptions({
 
     try {
       gatewayOptions = await dispatch<ModelOptionsResult>('model.options', params)
+
+      // A routed `request` belongs to its owner connection (absent = ambient, the app-wide
+      // convention). The ambient socket must never be relabeled as a different explicit owner.
+      const connection = sharedPickerConnection(ownerConnectionId)
+
+      if (gatewayOptions?.providers && (request || connection === sharedPickerConnection(null))) {
+        try {
+          await bindSharedPicker(sharedPickerOwner(connection, profileKey), (method, payload = {}) =>
+            dispatch<PickerPreferences>(method, { ...payload, ...(profileKey ? { profile: profileKey } : {}) }), request ?? gateway)
+        } catch (error) {
+          notifyError(error, 'Shared picker preferences could not be loaded.')
+        }
+      }
     } catch (error) {
       gatewayError = error
     }

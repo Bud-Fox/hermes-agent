@@ -746,6 +746,35 @@ export interface SharedMetricsDesktopActionDay {
 export interface SharedMetricsDesktopDailyResult {
   recorded: boolean
 }
+export interface PickerPreferencesParams {
+  profile?: string | null
+  session_id?: string | null
+}
+export interface PickerPreferencesResult {
+  version: 1
+  revision: number
+  initialized: boolean
+  favorites: string[]
+  visibility: PickerVisibility
+  custom_models: PickerCustomModel[]
+}
+export interface PickerVisibility {
+  visible: string[] | null
+  known: string[] | null
+}
+export interface PickerCustomModel {
+  provider: string
+  model: string
+}
+export interface PickerPreferencesUpdateParams {
+  profile?: string | null
+  session_id?: string | null
+  expected_revision: number
+  import_once?: boolean
+  favorites?: string[]
+  visibility?: PickerVisibility
+  custom_models?: PickerCustomModel[]
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -5094,6 +5123,10 @@ export interface RpcMethods {
   'model.disconnect': { params: ModelDisconnectParams; result: ModelDisconnectResult }
   /** Provider/model inventory for the picker, layered over the session's live provider when given. */
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
+  /** Read installation-shared non-secret picker preferences. */
+  'model.preferences.get': { params: PickerPreferencesParams; result: PickerPreferencesResult }
+  /** Patch shared picker preferences using revision CAS; stale edits conflict. */
+  'model.preferences.update': { params: PickerPreferencesUpdateParams; result: PickerPreferencesResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
   /** Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role. */
@@ -5492,6 +5525,8 @@ export const RPC_METHODS = [
   'message.react',
   'model.disconnect',
   'model.options',
+  'model.preferences.get',
+  'model.preferences.update',
   'model.save_key',
   'onboarding.ensure_setup_profile',
   'onboarding.reset_setup_profile',

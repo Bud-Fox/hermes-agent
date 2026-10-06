@@ -64,6 +64,7 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
+import { useSharedPickerGate } from '@/store/shared-picker-gate'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
@@ -210,6 +211,7 @@ export function ModelCatalogMenu({
   request,
   sessionId = null
 }: ModelCatalogMenuProps): ReactElement {
+  const gate = useSharedPickerGate(ownerConnectionId, profile)
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const copyPicker = t.modelPicker
@@ -235,10 +237,11 @@ export function ModelCatalogMenu({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    refetchOnMount: 'always',
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId })
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, ownerConnectionId, profile, request, sessionId })
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -332,7 +335,7 @@ export function ModelCatalogMenu({
   // Resolve visibility HERE, against the catalog we actually fetched: an empty
   // provider list would otherwise resolve to an empty key set that reads as
   // "user hid everything" and blanks the menu on first open.
-  useEffect(() => seedKnownModels(pickerProviders), [pickerProviders])
+  useEffect(() => { if (!gate) {seedKnownModels(pickerProviders)} }, [gate, pickerProviders])
 
   const shownKeys = useMemo(
     () => effectiveVisibleKeys(visibleModels, pickerProviders),
@@ -670,6 +673,17 @@ export function ModelCatalogMenu({
     }
   }
 
+  // Shared-preference rows/controls are withheld, but the host footer (session-level actions such
+  // as Refresh Models / Use Settings default) stays mounted under the same key across the switch.
+  if (gate) {
+    return (
+      <>
+        <p className="p-3 text-xs" role="status">{gate}</p>
+        <Fragment key="host-footer">{footer}</Fragment>
+      </>
+    )
+  }
+
   return (
     <>
       <DropdownMenuSearch
@@ -887,7 +901,7 @@ export function ModelCatalogMenu({
           contributes rows (the composer's Refresh Models) keeps the single
           trailing block it has always rendered. */}
       <DropdownMenuSeparator className="mx-0" />
-      {footer}
+      <Fragment key="host-footer">{footer}</Fragment>
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)', slugEntry && 'text-foreground')}
         onSelect={event => {
@@ -904,7 +918,7 @@ export function ModelCatalogMenu({
       </DropdownMenuItem>
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-        onSelect={() => setModelVisibilityOpen(true)}
+        onSelect={() => setModelVisibilityOpen(true, { connection: ownerConnectionId, profile, sessionId })}
       >
         <Codicon name="settings-gear" size="0.75rem" />
         {copy.editModels}

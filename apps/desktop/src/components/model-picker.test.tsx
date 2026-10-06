@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
+import { bindSharedPicker } from '@/store/shared-picker'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
@@ -100,7 +101,8 @@ function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
   return render(element)
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await bindSharedPicker('local:default', async () => ({ version: 1, revision: 0, initialized: true, favorites: [], visibility: { visible: null, known: null }, custom_models: [] }))
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(requestModelOptions).mockResolvedValue(OPTIONS)
   setRuntimeJobs([])
@@ -111,6 +113,31 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+})
+
+describe('ModelPickerDialog shared readiness', () => {
+  it('gates real custom controls during hydration and invalidates an incompatible open picker', async () => {
+    let finish!: (value: { version: number; revision: number; initialized: boolean; favorites: string[]; visibility: { visible: null; known: null }; custom_models: [] }) => void
+    const state = { version: 1, revision: 0, initialized: true, favorites: [] as string[], visibility: { visible: null, known: null }, custom_models: [] as [] }
+    let first = true
+
+    const loading = bindSharedPicker('local:default', () => {
+      if (!first) {return Promise.resolve(state)}
+      first = false
+
+      return new Promise(resolve => { finish = resolve })
+    })
+
+    await Promise.resolve()
+    renderPicker()
+    expect(await screen.findByText('Shared model preferences are loading. Reopen this picker if loading fails.')).toBeTruthy()
+    expect(screen.queryByText('Hermes-4.5')).toBeNull()
+    await act(async () => { finish(state); await loading })
+    expect(await screen.findByText('Hermes-4.5')).toBeTruthy()
+    await act(async () => { await bindSharedPicker('installation-b:default', async () => state) })
+    expect(await screen.findByText('This picker belongs to another connection. Close and reopen it before editing shared models.')).toBeTruthy()
+    expect(screen.queryByText('Hermes-4.5')).toBeNull()
+  })
 })
 
 describe('ModelPickerDialog download rows', () => {
@@ -206,6 +233,7 @@ describe('ModelPickerDialog readiness overlay', () => {
 
   it('does not refetch the static catalog after a minute or window focus', async () => {
     vi.useFakeTimers()
+
     try {
       renderPicker()
       await act(async () => {
@@ -241,22 +269,27 @@ describe('ModelPickerDialog readiness overlay', () => {
   it('updates readiness in place without reordering or disturbing the focused row until close', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const key = modelOptionsQueryKey('default', undefined, undefined)
+
     const first: ModelOptionsResult = {
       providers: [
         { slug: 'alpha', name: 'Alpha', models: ['one'], glyph: '●', readiness: 'ready' },
         { slug: 'beta', name: 'Beta', models: ['two'], glyph: '○', readiness: 'depleted' }
       ]
     }
+
     const firstOverlay: ModelOptionsResult = {
       providers: [
         { slug: 'beta', name: 'Beta fresh', models: ['two'], glyph: '●', readiness: 'ready' },
         { slug: 'alpha', name: 'Alpha fresh', models: ['one'], glyph: '○', readiness: 'depleted' }
       ]
     }
+
     const secondOverlay: ModelOptionsResult = {
       providers: [{ slug: 'beta', name: 'Beta newest', models: ['three'], glyph: '○', readiness: 'depleted' }]
     }
+
     vi.mocked(requestModelOptions).mockResolvedValue(first)
+
     const props = {
       currentModel: 'one',
       currentProvider: 'alpha',
@@ -264,6 +297,7 @@ describe('ModelPickerDialog readiness overlay', () => {
       onSelect: vi.fn(),
       open: true
     }
+
     const view = render(
       <QueryClientProvider client={client}>
         <I18nProvider>
@@ -271,6 +305,7 @@ describe('ModelPickerDialog readiness overlay', () => {
         </I18nProvider>
       </QueryClientProvider>
     )
+
     await screen.findByText('one')
     const one = screen.getByText('one').closest('[cmdk-item]') as HTMLElement
     const two = screen.getByText('two').closest('[cmdk-item]') as HTMLElement
