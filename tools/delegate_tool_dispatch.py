@@ -344,6 +344,14 @@ _BACKGROUND_NOTES = {
     ),
 }
 
+def _child_routes(batch: _Batch) -> list[dict]:
+    """Constructed child identities, never call-level defaults or credentials."""
+    return [{"task_index": i, "model": getattr(child, "model", None),
+             "provider": getattr(child, "provider", None),
+             "requested_provider": getattr(child, "requested_provider", None) or getattr(child, "provider", None)}
+            for i, _, child in batch.children]
+
+
 def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
     goals = [t["goal"] for t in batch.task_list]
@@ -351,6 +359,7 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     payload = {
         "status": "dispatched", "mode": "background", "count": n,
         "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
+        "routes": _child_routes(batch),
         "note": _BACKGROUND_NOTES["one"] if n == 1 else _BACKGROUND_NOTES["many"].format(n=n, k=len(units)),
     }
     if len(units) > 1:
@@ -388,6 +397,13 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
     child_agents = [c for (_, _, c) in unit.children]
+    labels = []
+    for route in _child_routes(unit):
+        provider = route["requested_provider"] or route["provider"] or "unknown"
+        billing = f" (runtime={route['provider']})" if route["provider"] != provider else ""
+        label = f"{provider}/{route['model']}{billing}"
+        if label not in labels:
+            labels.append(label)
 
     def _interrupt():
         for c in child_agents:
@@ -397,7 +413,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        role=unit.top_role, model="; ".join(labels) or None,
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
