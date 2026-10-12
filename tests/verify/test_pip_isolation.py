@@ -7,7 +7,7 @@ running generation's interpreter/``PYTHONPATH``, so a project that pinned ``mcp<
 pip treat the generation's committed ``mcp`` 2.0.0 as "inside the environment" and
 *uninstall* it on the downgrade -- breaking every MCP tool until a gateway reinstall.
 
-The fix (agent/verify/runner.py: ``_verify_subprocess_env`` + ``_isolate_pip_command``)
+The fix (agent/verify/runner.py: ``_clean_child_env`` + ``_isolate_pip``)
 runs pip inside the *project's own* ``.venv`` with ``--isolated`` and a
 ``PYTHONPATH``/``PYTHONHOME``-stripped environment, so the generation's site-packages is
 neither importable nor writable from the pip subprocess.
@@ -126,7 +126,7 @@ def test_verify_pip_install_does_not_clobber_generation_site(tmp_path, monkeypat
     # with -I so it ignores the inherited PYTHONPATH and reads only the venv's site.
     installed = subprocess.run(
         [str(venv_python), "-I", "-c", "import mcp;print(mcp.__version__)"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     assert installed.stdout.strip() == "1.9.0"
     assert result.ok
