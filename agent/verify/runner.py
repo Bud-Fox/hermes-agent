@@ -9,8 +9,11 @@ checkout — the same trust level as the terminal tool.
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -22,6 +25,7 @@ from agent.verify.recipes import Recipe
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
+_VENV_CREATE_TIMEOUT = 300.0
 _TAIL_CHARS = 2000
 PHASE_ORDER = ("bootstrap", "build", "test")
 # Project-authored shell commands; see module docstring.
@@ -29,6 +33,69 @@ _SUBPROCESS_KW: dict[str, Any] = dict(
     shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     text=True, errors="replace",
 )
+
+
+def _verify_subprocess_env() -> dict[str, str]:
+    """Environment for every verify subprocess, with the *host generation's* import
+    path stripped.
+
+    A verify install step that inherits ``PYTHONPATH``/``PYTHONHOME`` pointing at the
+    running generation's ``site-packages`` will resolve -- and, on a version pin,
+    *uninstall* -- packages living there. This silently removed the ``mcp`` package
+    from the committed generation twice (2026-10-05 DNB-MCP, 2026-10-12
+    deal-predictions-deterministic), breaking every MCP tool until a gateway
+    reinstall. Dropping these two variables makes pip/poetry/uv/npm operate only
+    against the project's own environment, never the generation's.
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    return env
+
+
+def _project_venv_python(root: Path) -> str:
+    """Absolute path to the project's own venv interpreter, creating ``<root>/.venv``
+    with the host interpreter if absent.
+
+    pip install steps run through this interpreter so every read and write is confined
+    to the project, never the host generation's ``site-packages``.
+    """
+    bindir, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    python_path = root / ".venv" / bindir / exe
+    if not python_path.exists():
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(root / ".venv")],
+            cwd=str(root), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, errors="replace",
+            timeout=_VENV_CREATE_TIMEOUT, env=_verify_subprocess_env(),
+        )
+    return str(python_path)
+
+
+# A leading pip invocation: ``pip`` / ``pip3`` / ``pip3.12``, or ``python -m pip``
+# (any interpreter spelling, including an absolute path). Only the leading token is
+# matched; the remainder (install/download, flags, ``-r requirements.txt``) is kept.
+_PIP_LEADING_RE = re.compile(
+    r"^(?:[\w./+-]*python[\w.]*\s+-m\s+pip|pip[0-9.]*)(?P<rest>\s.*|$)", re.DOTALL
+)
+
+
+def _isolate_pip_command(command: str, root: Path) -> str:
+    """If ``command`` is a pip invocation, rewrite it to run inside the project's own
+    venv with ``--isolated`` (which ignores ``PIP_*`` env vars and user config).
+
+    Combined with :func:`_verify_subprocess_env` this guarantees the host generation's
+    ``site-packages`` is neither importable nor writable from the pip subprocess.
+    Non-pip commands (poetry/uv/npm/arbitrary shell) are returned unchanged; they are
+    still protected by the cleaned environment.
+    """
+    match = _PIP_LEADING_RE.match(command.strip())
+    if not match:
+        return command
+    python = _project_venv_python(root)
+    # ``--isolated`` as a global option, right after ``-m pip``; the matched ``rest``
+    # keeps the original subcommand and arguments verbatim.
+    return f"{shlex.quote(python)} -m pip --isolated{match.group('rest')}"
 
 
 @dataclass
@@ -95,8 +162,12 @@ def _run_phase_command(
     on_output: Callable[[str], None] | None = None,
 ) -> PhaseResult:
     started = time.monotonic()
+    command = _isolate_pip_command(command, root)
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW, check=False)
+        proc = subprocess.run(
+            command, cwd=str(root), timeout=timeout, env=_verify_subprocess_env(),
+            **_SUBPROCESS_KW, check=False,
+        )
         output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
@@ -173,7 +244,10 @@ def _run_start_phase(
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
     # start_new_session: own process group for clean teardown.
-    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
+    proc = subprocess.Popen(
+        recipe.start, cwd=str(root), start_new_session=True,
+        env=_verify_subprocess_env(), **_SUBPROCESS_KW,
+    )
     output = ""
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)
