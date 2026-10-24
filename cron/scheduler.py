@@ -2084,7 +2084,13 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
+        if result.get("failure_reason") == "policy_violation":
+            from hermes_cli.middleware import PolicyViolation
+            raise PolicyViolation(result.get("error") or final_response_text or "policy guard rejected request")
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+    if result.get("blocked_by") or final_response_text.startswith("openrouter-free-guard REJECTED"):
+        from hermes_cli.middleware import PolicyViolation
+        raise PolicyViolation(result.get("error") or final_response_text or "policy guard rejected request")
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

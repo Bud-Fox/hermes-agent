@@ -999,6 +999,7 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
 
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
+    FailoverReason.policy_violation: "Policy violation rejected this request",
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
@@ -1746,6 +1747,8 @@ def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_fail
         return "⚠️ Billing or credits exhausted — switching to fallback provider..."
     if is_transport_failure:
         return "⚠️ Provider unreachable — switching to fallback provider..."
+    if classified.reason == FailoverReason.policy_violation:
+        return "⚠️ Policy guard rejected request — switching to fallback provider..."
     return "⚠️ Rate limited — switching to fallback provider..."
 
 
@@ -1931,14 +1934,16 @@ def route_classified_error(
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
+        or classified.reason == FailoverReason.policy_violation
     ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
         _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+        _is_policy = classified.reason == FailoverReason.policy_violation
         pool_may_recover = (
-            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+            False if (_is_upstream or _is_policy) else _ra()._pool_may_recover_from_rate_limit(getattr(agent, "_credential_pool", None))
         )
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))

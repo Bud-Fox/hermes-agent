@@ -26,6 +26,32 @@ VALID_MIDDLEWARE: set[str] = {
 }
 
 
+class PolicyViolation(Exception):
+    """Raised or returned when a policy guard rejects an execution.
+
+    Must fail-closed: middleware catches must never swallow this or skip to downstream providers.
+    """
+    def __init__(self, message: str = "", rule: str = "", **kwargs: Any) -> None:
+        super().__init__(message)
+        self.message = message
+        self.rule = rule
+        self.details = kwargs
+        self._is_policy_violation = True
+
+
+def is_policy_violation(obj: Any) -> bool:
+    if obj is None:
+        return False
+    if isinstance(obj, PolicyViolation):
+        return True
+    if getattr(obj, "_is_policy_violation", False):
+        return True
+    cls = getattr(obj, "__class__", None)
+    if cls and getattr(cls, "__name__", "") == "PolicyViolation":
+        return True
+    return False
+
+
 @dataclass
 class RequestMiddlewareResult:
     """Result of applying request middleware to a mutable payload."""
@@ -198,10 +224,15 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
         try:
-            return callback(**call_kwargs)
+            res = callback(**call_kwargs)
+            if is_policy_violation(res):
+                raise res if isinstance(res, BaseException) else PolicyViolation(str(res))
+            return res
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:
+            if is_policy_violation(exc):
+                raise
             # Runs once per tool/LLM call: a mis-declared callback fails identically every time,
             # so it goes through the manager's warn-once reporter (#111922).
             manager._report_hook_failure(kind, callback, call_kwargs, exc, surface="Middleware")

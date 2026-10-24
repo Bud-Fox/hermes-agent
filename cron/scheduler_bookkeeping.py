@@ -11,6 +11,11 @@ def fail_empty_response(d, final_response):
     if d.success and not str(final_response or "").strip():
         d.success = False
         d.error = EMPTY_RESPONSE_ERROR
+    if d.success:
+        resp = str(final_response or "").strip()
+        if getattr(d, "blocked_by", None) or resp.startswith("openrouter-free-guard REJECTED"):
+            d.success = False
+            d.error = resp or "policy guard rejected request"
 
 
 def finish_interrupted_run(job, execution_id, delivery_error):

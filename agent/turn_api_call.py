@@ -134,12 +134,14 @@ def perform_api_call(
         if _model_request_active is not None:
             _model_request_active.set()
     try:
+        has_pending_fallback = bool(agent._has_pending_fallback() if hasattr(agent, "_has_pending_fallback") else False)
         response = run_llm_execution_middleware(
             api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
             task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
             session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
             api_call_count=api_call_count, middleware_trace=list(_llm_middleware_trace),
+            has_fallback=has_pending_fallback,
         )
     finally:
         with _bracket:
