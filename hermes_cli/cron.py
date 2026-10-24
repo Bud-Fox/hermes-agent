@@ -732,6 +732,9 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
     workdir = str(job.get("workdir") or "").strip()
     if workdir and not Path(workdir).expanduser().exists():
         issues.append(f"workdir not found: {workdir}")
+    deliver = str(job.get("deliver") or "").lower()
+    if "origin" in [p.strip() for p in deliver.split(",") if p.strip()] and not job.get("origin"):
+        issues.append("deliver includes 'origin' but origin is null (run will fail to deliver)")
     return issues
 
 
@@ -787,7 +790,63 @@ def _print_job_details(job_data: dict[str, Any]) -> None:
             print(template.format(job_data[key]))
 
 
+_UNSET = object()
+
+
+def preflight_deliver_origin(
+    deliver: Optional[str] = None,
+    origin: Any = _UNSET,
+    *,
+    failure_deliver: Optional[str] = None,
+) -> Optional[str]:
+    """Validate that '--deliver origin' is not used when origin is null.
+
+    Non-interactive CLI has no origin context. If deliver (or failure_deliver)
+    specifies 'origin' but no origin exists, this returns an error message
+    explaining that an explicit delivery target is required.
+    """
+    targets_to_check = []
+    if deliver:
+        targets_to_check.append(deliver)
+    if failure_deliver:
+        targets_to_check.append(failure_deliver)
+    if not targets_to_check:
+        return None
+
+    needs_origin = False
+    for target in targets_to_check:
+        tokens = [t.strip().lower() for t in target.split(",") if t.strip()]
+        if "origin" in tokens:
+            needs_origin = True
+            break
+
+    if not needs_origin:
+        return None
+
+    if origin is _UNSET:
+        try:
+            from tools.cronjob_job_args import _origin_from_env
+            origin = _origin_from_env()
+        except Exception:
+            origin = None
+
+    if not origin:
+        return (
+            "Cannot use '--deliver origin' from CLI because no session origin exists. "
+            "Please pass an explicit delivery target (e.g. --deliver telegram or a channel id)."
+        )
+    return None
+
+
 def cron_create(args):
+    # Preflight: reject --deliver origin when origin is null (non-interactive CLI)
+    if err := preflight_deliver_origin(
+        deliver=getattr(args, "deliver", None),
+        failure_deliver=getattr(args, "failure_deliver", None),
+    ):
+        print(color(f"Error: {err}", Colors.RED))
+        return 1
+
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
     result = _cron_api(
@@ -826,6 +885,17 @@ def cron_edit(args):
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
+
+    deliver = getattr(args, "deliver", None)
+    failure_deliver = getattr(args, "failure_deliver", None)
+    if deliver or failure_deliver:
+        existing_origin = job.get("origin") if job else None
+        if err := preflight_deliver_origin(
+            deliver=deliver, origin=existing_origin, failure_deliver=failure_deliver
+        ):
+            print(color(f"Error: {err}", Colors.RED))
+            return 1
+
     existing_skills = list(job.get("skills") or ([job["skill"]] if job.get("skill") else []))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
     add_skills = _normalize_skills(None, getattr(args, "add_skills", None)) or []

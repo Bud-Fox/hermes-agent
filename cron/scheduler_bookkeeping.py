@@ -114,8 +114,13 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
     from functools import partial
     from cron.executions import get_execution, recover_receipted_execution
     finish = partial(recover_receipted_execution, job_id=job['id']) if recovered else scheduler.finish_execution
+    run_success = d.success
+    run_error = d.error
+    if delivery_outcome == "not_configured":
+        run_success = False
+        run_error = run_error or "delivery target is not configured"
     finished = finish(
-        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+        execution_id, success=run_success, error=run_error, delivery_outcome=delivery_outcome)
     if recovered and finished is None:
         current = get_execution(execution_id)
         # A live foreign firer still owns this row. Keep its only recovery link until settlement.

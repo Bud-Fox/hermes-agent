@@ -319,6 +319,9 @@ def finish_execution(
     settles through ``recover_receipted_execution``.
     """
     now = _hermes_now().isoformat()
+    if delivery_outcome == "not_configured":
+        success = False
+        error = error or "delivery target is not configured"
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
@@ -351,6 +354,9 @@ def recover_receipted_execution(execution_id, job_id, *, success, error=None, de
         row = _recoverable_row(conn, execution_id, job_id)
         if row is None or _row_owner_live(row):
             return None
+        if delivery_outcome == "not_configured":
+            success = False
+            error = error or "delivery target is not configured"
         conn.execute(
             """UPDATE executions SET status=?, finished_at=?, error=?, handoff_pending=0,
                handoff_started_at=NULL, delivery_outcome=? WHERE id=?""",
