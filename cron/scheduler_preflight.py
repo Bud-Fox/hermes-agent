@@ -233,12 +233,41 @@ class SharedRouteAdapters:
         return default
 
 
+def _preflight_check_origin_platform(job: dict) -> Optional[str]:
+    """``deliver``/``failure_deliver`` includes ``origin``: the persisted origin's platform must
+    resolve the way delivery-time ``Platform(name)`` (scheduler_delivery._prepare_target_delivery)
+    resolves it, else the job would run to completion and only then fail as
+    ``delivery_failed: unknown platform '<p>'`` — visible before any execution is spent.
+    No credentials/connected check here: an origin is where the conversation happened, and the
+    deliver-time gates keep their own verdicts."""
+    origin = _delivery._resolve_origin(job) or {}
+    platform_name = str(origin.get("platform") or "").strip()
+    if not platform_name:
+        return None  # missing origin is HR-124's create-time check, not a platform problem
+    try:
+        from gateway.config import Platform
+        Platform(platform_name.lower())
+    except (ValueError, KeyError):
+        return (
+            f"delivery origin platform '{platform_name}' is not a resolvable "
+            "cron delivery target (deliver includes 'origin'). Fix the job's "
+            "`deliver` value to an explicit supported target (e.g. bot-chat, "
+            "telegram) or remove the job's origin dependency."
+        )
+    except Exception:
+        return None  # fail-open: preflight blocks only on an affirmative verdict
+    return None
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
-    """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
-    never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
-    only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
-    ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
-    surface when a failure occurs (NS-788)."""
+    """Check delivery targets resolve to configured platforms. ``local``/``all`` are
+    never checked (no gateway-config load); ``origin`` is checked for platform RESOLVABILITY
+    only — the exact predicate delivery-time ``_prepare_target_delivery`` applies — because an
+    origin captured on a non-delivery surface (e.g. ``webui``) otherwise runs the whole job and
+    only then fails as ``delivery_failed: unknown platform`` (#t_88980860). Unknown platform
+    always blocks; known platform blocks only if the gateway config loads AND reports it
+    unconnected; config load failures fail OPEN. ``failure_deliver`` gets the same rules — a
+    typo'd failure platform would otherwise only surface when a failure occurs (NS-788)."""
     deliver_value = _delivery._normalize_deliver_value(job.get("deliver", "local"))
     failure_deliver_value = _delivery._normalize_deliver_value(
         _delivery._delivery_lane_value(job, for_failure=True))
@@ -246,10 +275,18 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     if failure_deliver_value != deliver_value:
         lane_values.append(failure_deliver_value)
     platform_parts: list[str] = []
+    origin_checked = False
     for lane_value in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
-            if not part or part.lower() in {"local", "origin", "all"}:
+            if not part or part.lower() in {"local", "all"}:
+                continue
+            if part.lower() == "origin":
+                if not origin_checked:
+                    origin_checked = True
+                    reason = _preflight_check_origin_platform(job)
+                    if reason:
+                        return reason
                 continue
             # bot-chat targets deliver via a local subprocess; failures land in last_delivery_error.
             if _delivery.parse_bot_chat_deliver_token(part) is not None:

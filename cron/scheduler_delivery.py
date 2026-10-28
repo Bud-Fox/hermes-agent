@@ -731,6 +731,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     job_id = job.get("id", "?")
     profile_label = profile or "(own)"
     message = bot_chat_message(job, content)
+    key = None  # delivery id: stays None (logged as unknown) when identity derivation itself failed
     try:
         source_home = get_hermes_home().resolve()
         home = (get_profile_dir(profile) if profile else source_home).resolve()
@@ -786,6 +787,18 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
                   else receipt.get("error") or receipt.get("reason") or "not completed")
         return f"{target} {status} (receipt {key}): {detail}"
     except Exception as exc:
+        # #t_88980860 F2: this handler used to return the bare string only, so live logs showed
+        # "unverified: not_found" with no exception type, delivery id or run id — the exact
+        # refusing branch (gateway/session_local_migration.adopt_legacy_session raising
+        # RuntimeStoreError('not_found')) could never be proven from persisted logs. Log the
+        # correlated identity at ERROR with traceback; the returned string keeps its contract.
+        logger.error(
+            "Job '%s': bot-chat delivery to profile '%s' unverified: %s: %s "
+            "(delivery_id=%s run_id=%s for_failure=%s)",
+            job_id, profile_label, type(exc).__name__, exc,
+            key, job.get("execution_id") or job.get("_bot_chat_run_id"), for_failure,
+            exc_info=True,
+        )
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
 
 
