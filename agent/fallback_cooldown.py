@@ -38,7 +38,10 @@ def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> 
     delay = _provider_reset_delay(reset_at)
     if delay is None or delay >= threshold:
         return False
-    logging.info("Rate limit resets in %.0f s (< fallback.min_switch_reset_seconds=%.0f): staying on the primary", delay, threshold)
+    logger.warning(
+        "Fallback skip [reason=rate_limited]: primary reset in %.0f s "
+        "(< fallback.min_switch_reset_seconds=%.0f) — staying on the primary; walk not started",
+        delay, threshold)
     return True
 
 
