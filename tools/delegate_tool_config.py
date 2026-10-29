@@ -542,6 +542,42 @@ def _resolve_child_runtime(
     else:
         effective_provider = getattr(parent_agent, "provider", None)
         effective_base_url, parent_api_key = _inherit_parent_endpoint(parent_agent, parent_agent.base_url, parent_api_key)
+    # Banned models gate.
+    try:
+        import logging
+        from agent.banned_models import banned_reason as _banned_reason
+        _br = _banned_reason(effective_provider, effective_model)
+        if _br is None:
+            _br = _banned_reason(None, effective_model)
+        if _br:
+            logging.getLogger(__name__).warning("banned model refused: %s/%s: %s", effective_provider, effective_model, _br)
+            raise ValueError(f"banned model: {effective_provider}/{effective_model}: {_br}")
+    except ValueError:
+        raise
+    except Exception:
+        pass
+    # Pre-flight health gate: if this provider was recorded as a dead pool (recent
+    # exhaustion/failure signals), spawn on the first healthy fallback instead.
+    # No-op unless provider_health has a fresh False entry for the provider.
+    try:
+        from agent.provider_health import is_dead_pool
+        if effective_provider and is_dead_pool(effective_provider, effective_model, effective_base_url):
+            _chain = _resolve_child_fallback_chain(
+                parent_agent, routing_cfg or {}, pinned=bool(override_provider)) or []
+            for _entry in _chain:
+                _fp, _fm = _entry.get("provider"), _entry.get("model")
+                if _fp and not is_dead_pool(_fp, _fm, _entry.get("base_url")):
+                    logging.getLogger(__name__).warning(
+                        "pre-flight: %s/%s dead pool -> spawning on fallback %s/%s",
+                        effective_provider, effective_model, _fp, _fm)
+                    effective_provider, effective_model = _fp, _fm
+                    if _entry.get("base_url"):
+                        effective_base_url = _entry.get("base_url")
+                    if _entry.get("api_key"):
+                        parent_api_key = _entry.get("api_key")
+                    break
+    except Exception:
+        pass
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
     # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
     # same-provider inheritance would pin the child on the wrong wire — re-derive.

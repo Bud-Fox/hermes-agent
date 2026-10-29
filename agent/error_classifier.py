@@ -1108,6 +1108,10 @@ def _status_404(c: _Ctx) -> Verdict:
 
 
 def _status_429(c: _Ctx) -> Verdict:
+    # Non-retryable 429: pool/key exhaustion signals -> immediate fallback, no retries.
+    _exhaustion_markers = ("no keys", "router_keys_exhausted", "insufficient")
+    if c.code == "1113" or "1113" in (c.msg or "") or any(m in (c.msg or "") for m in _exhaustion_markers):
+        return _v(_R.rate_limit, retryable=False, should_fallback=True)
     # A structured billing code is decisive: LiteLLM stamps
     # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
     # this handler always returns, so _by_error_code never sees the code.
