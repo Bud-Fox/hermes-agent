@@ -64,6 +64,58 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
+_FALLBACK_BOOLS = {"true": True, "false": False}
+_FALLBACK_NULLS = {"null", "~", ""}
+
+
+def _split_flow_items(inner: str) -> list[str]:
+    """Split flow-collection content on top-level commas (quotes may hold them)."""
+    items, current, quote = [], [], None
+    for ch in inner:
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+            current.append(ch)
+        elif ch == "," and not quote:
+            items.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    items.append("".join(current))
+    return [item.strip() for item in items]
+
+
+def _fallback_scalar(value: str) -> Any:
+    """Parse a fallback key:value scalar into the type plain YAML would give:
+    flow sequences/mappings, booleans, null, numbers; unquoted scalars stay
+    strings and quoted values are unquoted."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    if value.startswith("[") and value.endswith("]"):
+        return [parsed for v in _split_flow_items(value[1:-1]) if v and (parsed := _fallback_scalar(v)) is not None]
+    if value.startswith("{") and value.endswith("}"):
+        result: dict[str, Any] = {}
+        for item in _split_flow_items(value[1:-1]):
+            if ":" in item:
+                k, v = item.split(":", 1)
+                result[k.strip().strip("\"'")] = _fallback_scalar(v.strip())
+        return result
+    lowered = value.lower()
+    if lowered in _FALLBACK_BOOLS:
+        return _FALLBACK_BOOLS[lowered]
+    if lowered in _FALLBACK_NULLS:
+        return None
+    for cast in (int, float):
+        try:
+            return cast(value)
+        except ValueError:
+            continue
+    return value
+
+
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from markdown; returns (frontmatter_dict, body).
     Malformed YAML falls back to key:value line splitting. A leading UTF-8 BOM
@@ -79,11 +131,15 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
             frontmatter = parsed
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "YAML frontmatter parse failed for skill, using line-by-line fallback; "
+            "flow-style fields may be lossy: %s", exc,
+        )
         for line in yaml_content.strip().split("\n"):
             if ":" in line:
                 key, value = line.split(":", 1)
-                frontmatter[key.strip()] = value.strip()
+                frontmatter[key.strip()] = _fallback_scalar(value.strip())
     return frontmatter, body
 
 
