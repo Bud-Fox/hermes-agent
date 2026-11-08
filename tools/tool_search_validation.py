@@ -169,7 +169,17 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
         name = str(raw.get("name") or "").strip()
         if not name:
-            return [], f"tool_call calls[{position}] requires a 'name'"
+            # T-091 (glm-class flattening): the model stuffed deferred-tool arguments directly
+            # into the batch entry ({query, limit}, no 'name'). tool_search is a bridge tool and
+            # can NEVER be invoked via tool_call, so there is nothing to repair — fail with a
+            # targeted hint that restates the correct shape (small models re-send the identical
+            # batch when told only the constraint; the hint is what gets them unstuck).
+            hint = ""
+            if {"query", "limit"} & set(raw):
+                hint = (" (looks like tool_search arguments sent without a tool name — first call "
+                        "tool_search directly to find the tool, then tool_call with "
+                        "calls[{\"name\": \"<found tool>\", \"arguments\": {...}}])")
+            return [], f"tool_call calls[{position}] requires a 'name'{hint}"
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
