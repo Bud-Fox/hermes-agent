@@ -1305,6 +1305,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
             from gateway.session_cli_turn import one_turn_route
             model, runtime_kwargs = one_turn_route(self, policy, model, runtime_kwargs)
+            # T-092 (2026-11-09 incident): reject a model id catalogued only under OTHER
+            # providers BEFORE building the agent — fails the turn with an actionable message
+            # instead of a vendor 400 "Unknown Model" after an upstream round-trip.
+            from gateway.model_provider_guard import assert_model_served_by_runtime_provider
+            assert_model_served_by_runtime_provider(model, runtime_kwargs)
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
