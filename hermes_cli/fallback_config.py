@@ -12,6 +12,29 @@ def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
 
 
+def _normalize_provider_id(value: str) -> str:
+    """Collapse provider aliases to the canonical id (lazy to avoid import cycles).
+
+    ``opencode-zen`` is the legacy pre-rename id of ``opencode``; ``zen`` is a
+    short alias. Without normalization, two fallback entries naming the same
+    backend under different ids are kept as separate slots, shifting the chain
+    and letting an alias slip past the same-backend skip (#85235).
+    """
+    try:
+        from hermes_cli.providers import normalize_provider
+    except Exception:  # pragma: no cover - import resilience
+        # Silent degradation: alias collapse is disabled and we fall back to a
+        # bare lowercase. Log so a future import cycle/refactor can't regress
+        # the dedup invisibly.
+        logger.warning(
+            "fallback provider alias collapse degraded to lowercase: "
+            "could not import hermes_cli.providers.normalize_provider",
+            exc_info=True,
+        )
+        return value.lower()
+    return normalize_provider(value)
+
+
 def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     """API key for one fallback entry: inline ``api_key``, else ``key_env``.
 
@@ -74,7 +97,46 @@ def pre_agent_fallback_notice(
 
 
 
-def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+OPENROUTER_FUNDED_LANE = "openrouter-funded"
+# The funded OpenRouter lane's designated paid model. "openrouter-funded" is an operator LANE
+# alias, not a real catalog id (verified against the live /api/v1/models catalog: no such id;
+# closest real meta-models are openrouter/auto, openrouter/free). Left unresolved, the binder
+# logs "provider not configured" and the lane is silently absent from the live transition —
+# the 2026-10-22 cascade (openrouter-funded/z-ai/glm-5.3 skipped → contabo-gemini →
+# zai-coding-plan → anthropic, no paid lane left). Override per deployment with
+# provider_routing.openrouter_funded_model.
+OPENROUTER_FUNDED_DEFAULT_MODEL = "z-ai/glm-5.3"
+
+
+def _funded_lane_model(config: dict[str, Any] | None) -> str:
+    """Designated paid model for the openrouter-funded lane (config override > default)."""
+    override = str(((config or {}).get("provider_routing") or {}).get("openrouter_funded_model") or "").strip()
+    return override or OPENROUTER_FUNDED_DEFAULT_MODEL
+
+
+def _resolve_funded_lane(provider: str, model: str, lane_model: str) -> tuple[str, str, bool, str]:
+    """Rewrite the operator's ``openrouter-funded`` lane alias to a real route.
+
+    Two spellings exist in the wild: the legacy ``{provider: openrouter-funded, model:
+    <real id>}`` (2026-10-22 Mac config) and the current ``{provider: openrouter, model:
+    openrouter-funded}`` (Phase A revival). Both name the LANE — the funded OpenRouter
+    credential with a real paid model — so either spelling left as-is makes
+    ``resolve_provider_client`` return None (pseudo provider) or the request target an id
+    that is not in the OpenRouter catalog. Returns ``(provider, model, rewritten, source)``
+    where ``source`` names where the resolved model came from.
+    """
+    if provider.lower() == OPENROUTER_FUNDED_LANE:
+        if model and model.lower() != OPENROUTER_FUNDED_LANE:
+            return "openrouter", model, True, "entry model"
+        return "openrouter", lane_model, True, (
+            "config override" if lane_model != OPENROUTER_FUNDED_DEFAULT_MODEL else "designated default")
+    if provider.lower() == "openrouter" and model.lower() == OPENROUTER_FUNDED_LANE:
+        return provider, lane_model, True, (
+            "config override" if lane_model != OPENROUTER_FUNDED_DEFAULT_MODEL else "designated default")
+    return provider, model, False, ""
+
+
+def _iter_fallback_entries(raw: Any, lane_model: str = OPENROUTER_FUNDED_DEFAULT_MODEL) -> list[dict[str, Any]]:
     candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
     entries: list[dict[str, Any]] = []
     for entry in candidates:
@@ -82,6 +144,12 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
             continue
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
+        provider, model, lane_rewritten, lane_source = _resolve_funded_lane(provider, model, lane_model)
+        if lane_rewritten:
+            logger.info(
+                "Fallback lane %r normalized to %s/%s (model source: %s)",
+                OPENROUTER_FUNDED_LANE, provider, model, lane_source,
+            )
         if not provider or not model:
             continue
         normalized = {**entry, "provider": provider, "model": model}
@@ -94,7 +162,7 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
 
 def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     return (
-        str(entry.get("provider") or "").strip().lower(),
+        _normalize_provider_id(str(entry.get("provider") or "").strip()),
         str(entry.get("model") or "").strip().lower(),
         _normalized_base_url(entry.get("base_url")).lower(),
     )
@@ -112,7 +180,7 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+        for entry in _iter_fallback_entries(config.get(key), _funded_lane_model(config)):
             identity = _entry_identity(entry)
             if identity not in seen:
                 seen.add(identity)

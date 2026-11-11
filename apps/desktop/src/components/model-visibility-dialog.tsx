@@ -40,6 +40,24 @@ import {
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { sharedPickerOwner, sharedPickerReady } from '@/store/shared-picker'
 import { useSharedPickerGate } from '@/store/shared-picker-gate'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { sessionOwnerIsKnown } from '@/store/session-owner-resolution'
+import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
+
+/** A session-scoped `model.options` goes to the session's OWNER: the ambient
+ *  socket refuses a secondary profile's session_id and the dialog fell back to
+ *  the launch profile's REST catalog. An owner nothing names yet keeps the
+ *  ambient path (and its REST recovery) — this is a settings view, not a write. */
+function ownerModelOptionsRequest(gw: HermesGateway | undefined, sessionId: null | string | undefined) {
+  if (!gw || !sessionId || !sessionOwnerIsKnown(knownOwnerForSession(sessionId))) {
+    return undefined
+  }
+
+  const ambient = ambientRequestFor(gw)
+
+  return <T,>(method: string, params?: Record<string, unknown>) =>
+    requestForOwnedSession<T>(sessionId, ambient, method, params)
+}
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -73,7 +91,11 @@ export function ModelVisibilityDialog({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     refetchOnMount: 'always',
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, ownerConnectionId, profile, request, sessionId }),
+    queryFn: (): Promise<ModelOptionsResult> =>
+      requestModelOptions({
+        gateway: gw, ownerConnectionId, profile, sessionId,
+        request: request ?? ownerModelOptionsRequest(gw, sessionId)
+      }),
     enabled: open
   })
 
@@ -144,7 +166,7 @@ export function ModelVisibilityDialog({
           <Search className="pointer-events-none size-3.5 shrink-0 text-muted-foreground/70" />
           <input
             autoFocus
-            className="h-5 w-full bg-transparent text-xs text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
+            className="h-5 w-full bg-transparent text-xs text-foreground placeholder:text-(--ui-text-tertiary)"
             onChange={event => setSearch(event.target.value)}
             placeholder={copy.search}
             type="text"
@@ -179,7 +201,7 @@ export function ModelVisibilityDialog({
                 <div className="py-0.5" key={provider.slug}>
                   <div className="flex items-center gap-2 px-3 pb-0.5 pt-1">
                     <button
-                      className="group/label flex w-full items-center gap-1 pb-0.5 pt-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary) hover:bg-transparent"
+                      className="group/label flex w-full items-center gap-1 pb-0.5 pt-0.5 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-secondary) hover:bg-transparent"
                       onClick={() => toggleCollapsedProvider(provider.slug)}
                       type="button"
                     >

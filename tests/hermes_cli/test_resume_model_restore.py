@@ -186,7 +186,7 @@ def test_persist_model_switch_writes_model_and_both_route_shapes():
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_Result())
     assert written["model"] == ("s1", "deepseek-v4-flash-free")
-    sid, patch = written["patch"]
+    _sid, patch = written["patch"]
     # Nested shape for the CLI reader...
     assert patch["gateway_runtime"]["provider"] == "custom:opencode-zen"
     # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.
@@ -301,6 +301,44 @@ def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
     # Provider dropped -> model restored but provider stays ambient.
     assert stub.model == "glm-4.7"
     assert stub.provider == "openrouter"
+
+
+def test_restore_session_model_recovers_route_from_billing_columns(monkeypatch):
+    """#136323 end-to-end: a CLI session that never ran /model has only the model column plus the
+    billing class/endpoint. Resume must run it on the custom entry that endpoint belongs to, not
+    the ambient default."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: "custom:glm")
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"base_url": "http://127.0.0.1:1234/v1", "api_key": "sk-glm"})
+    meta = _row(model="GLM-5.3")
+    meta["billing_provider"] = "custom"
+    meta["billing_base_url"] = "http://127.0.0.1:1234/v1"
+    stub = _make_stub()
+    stub._restore_session_model(meta)
+    assert stub.model == "GLM-5.3"
+    assert stub.provider == "custom:glm"
+    assert stub.requested_provider == "custom:glm"
+    assert stub.base_url == "http://127.0.0.1:1234/v1"
+    assert stub.api_key == "sk-glm"
+
+
+def test_restore_session_model_billing_custom_without_configured_entry_keeps_ambient(monkeypatch):
+    """The billing endpoint no longer matches any configured entry — the heal resolves nothing, so
+    the stored model is restored but the route stays ambient (the first turn surfaces the error)."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: None)
+    meta = _row(model="GLM-5.3")
+    meta["billing_provider"] = "custom"
+    meta["billing_base_url"] = "http://gone-endpoint/v1"
+    stub = _make_stub()
+    stub._restore_session_model(meta)
+    assert stub.model == "GLM-5.3"
+    assert stub.provider == "openrouter"
+    assert stub.base_url == "https://openrouter.ai/api/v1"
 
 
 def test_restore_session_model_rederives_per_model_wire_for_opencode_rows(monkeypatch):
@@ -429,6 +467,66 @@ def test_session_gateway_runtime_billing_provider_fills_top_level_route_without_
     assert SessionDB.session_gateway_runtime(meta) == {"base_url": "https://f/v1", "api_mode": "chat_completions"}
 
 
+def test_session_gateway_runtime_bare_custom_falls_back_to_billing_base_url():
+    """#136323: plain CLI turns persist only the billing class + the endpoint they served. The
+    reader surfaces both so the bare-custom heal can recover custom:<name> instead of resume
+    recombining the stored model with the ambient default."""
+    meta = _row()
+    meta["billing_provider"] = "custom"
+    meta["billing_base_url"] = "http://127.0.0.1:1234/v1"
+    assert SessionDB.session_gateway_runtime(meta) == {
+        "provider": "custom", "base_url": "http://127.0.0.1:1234/v1"}
+    # Without an endpoint there is nothing to attribute — stays filtered (ambient resume).
+    del meta["billing_base_url"]
+    assert SessionDB.session_gateway_runtime(meta) == {}
+
+
+GLM_OLD, GLM_NEW = "http://10.0.0.5:8000/v1", "http://10.0.0.6:8000/v1"
+
+
+def _billing_only_meta():
+    meta = _row(model="GLM-5.3", model_config={"api_mode": "chat_completions"})
+    meta["billing_provider"] = "custom"
+    meta["billing_base_url"] = GLM_OLD
+    return meta
+
+
+def _custom_config(monkeypatch, *entries):
+    import hermes_cli.runtime_provider as rp
+    config = {"model": {"provider": "anthropic", "default": "claude-opus-5-5"}, "custom_providers": list(entries)}
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: config["model"])
+
+
+def test_stored_session_route_follows_a_custom_entry_that_moved(monkeypatch):
+    """The entry serving the chat's model now lives at a new URL: resume runs on the entry, which
+    resolves its own endpoint, not on the URL the chat last billed."""
+    from hermes_cli.cli_model_switch_mixin import stored_session_route
+    _custom_config(monkeypatch, {"name": "glm", "base_url": GLM_NEW, "api_key": "glm-key", "model": "GLM-5.3"})
+
+    route = stored_session_route(_billing_only_meta(), current_model="claude-opus-5-5", current_provider="anthropic")
+
+    assert route[:3] == ("GLM-5.3", "custom:glm", None)
+    assert route[4] is True
+
+
+def test_stored_session_route_drops_an_endpoint_no_entry_serves(monkeypatch):
+    from hermes_cli.cli_model_switch_mixin import stored_session_route
+    _custom_config(monkeypatch)
+
+    route = stored_session_route(_billing_only_meta(), current_model="claude-opus-5-5", current_provider="anthropic")
+
+    assert route == ("GLM-5.3", None, None, None, False)
+
+
+def test_session_gateway_runtime_bare_auto_ignores_billing_base_url():
+    """auto bills through the router — no attributable endpoint, stays filtered."""
+    meta = _row()
+    meta["billing_provider"] = "auto"
+    meta["billing_base_url"] = "http://127.0.0.1:1234/v1"
+    assert SessionDB.session_gateway_runtime(meta) == {}
+
+
 def test_restore_session_model_restores_billing_provider_fallback():
     """End-to-end: _restore_session_model uses billing_provider fallback."""
     stub = _make_stub()
@@ -439,3 +537,84 @@ def test_restore_session_model_restores_billing_provider_fallback():
     })
     assert stub.model == "glm-4.7"
     assert stub.provider == "minimax"
+
+
+# ── write-time guard (T-094 follow-up): refuse poisoned switch results ──
+
+
+def _two_provider_config():
+    return {"providers": {
+        "reflection-beam": {
+            "name": "Reflection Beam (direct)",
+            "api": "https://api.reflection.ai/openai/v1",
+            "models": ["Beam-1.0-501B-A23B"],
+        },
+        "zai-coding-plan": {
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "models": ["glm-5.3", "glm-5.3-flash"],
+        },
+    }}
+
+
+class _PoisonedResult(_Result):
+    new_model = "glm-5.3-flash"
+    target_provider = "custom:reflection-beam"
+    base_url = "https://api.reflection.ai/openai/v1"
+    api_mode = ""
+
+
+def test_persist_model_switch_refuses_pair_not_served_by_target(monkeypatch):
+    """T-094 follow-up: _persist_model_switch_to_session must fail fast when the
+    switch result's (provider, base_url) provably does not serve new_model —
+    the persisted row is exactly what a later resume 404s on (incident
+    2026-11-11: glm-5.3-flash persisted with the api.reflection.ai route)."""
+    import pytest
+
+    from hermes_cli.auth import AuthError
+
+    config = _two_provider_config()
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+    written = []
+
+    class _DB:
+        def update_session_model(self, sid, model):
+            written.append(("model", sid, model))
+
+        def patch_session_model_config(self, sid, patch):
+            written.append(("patch", sid, patch))
+
+    stub = _make_stub(_session_db=_DB(), session_id="s1")
+    with pytest.raises(AuthError) as ei:
+        stub._persist_model_switch_to_session(_PoisonedResult())
+    assert ei.value.code == "model_provider_mismatch"
+    assert "zai-coding-plan" in str(ei.value)
+    # Refuse means refuse: nothing reaches the session DB.
+    assert not written
+
+
+def test_persist_model_switch_still_writes_unknown_model(monkeypatch):
+    """Models catalogued nowhere stay legitimate (dynamic discovery) — the
+    guard must not block a switch just because no catalog lists the model."""
+    config = _two_provider_config()
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+    written = {}
+
+    class _DB:
+        def update_session_model(self, sid, model):
+            written["model"] = (sid, model)
+
+        def patch_session_model_config(self, sid, patch):
+            written["patch"] = (sid, patch)
+
+    class _Dynamic(_Result):
+        new_model = "totally-unknown-model"
+        target_provider = "custom:reflection-beam"
+        base_url = "https://api.reflection.ai/openai/v1"
+
+    stub = _make_stub(_session_db=_DB(), session_id="s1")
+    stub._persist_model_switch_to_session(_Dynamic())
+    assert written["model"] == ("s1", "totally-unknown-model")
+    _sid, patch = written["patch"]
+    assert patch["gateway_runtime"]["provider"] == "custom:reflection-beam"
