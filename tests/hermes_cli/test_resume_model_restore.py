@@ -537,3 +537,84 @@ def test_restore_session_model_restores_billing_provider_fallback():
     })
     assert stub.model == "glm-4.7"
     assert stub.provider == "minimax"
+
+
+# ── write-time guard (T-094 follow-up): refuse poisoned switch results ──
+
+
+def _two_provider_config():
+    return {"providers": {
+        "reflection-beam": {
+            "name": "Reflection Beam (direct)",
+            "api": "https://api.reflection.ai/openai/v1",
+            "models": ["Beam-1.0-501B-A23B"],
+        },
+        "zai-coding-plan": {
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "models": ["glm-5.3", "glm-5.3-flash"],
+        },
+    }}
+
+
+class _PoisonedResult(_Result):
+    new_model = "glm-5.3-flash"
+    target_provider = "custom:reflection-beam"
+    base_url = "https://api.reflection.ai/openai/v1"
+    api_mode = ""
+
+
+def test_persist_model_switch_refuses_pair_not_served_by_target(monkeypatch):
+    """T-094 follow-up: _persist_model_switch_to_session must fail fast when the
+    switch result's (provider, base_url) provably does not serve new_model —
+    the persisted row is exactly what a later resume 404s on (incident
+    2026-11-11: glm-5.3-flash persisted with the api.reflection.ai route)."""
+    import pytest
+
+    from hermes_cli.auth import AuthError
+
+    config = _two_provider_config()
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+    written = []
+
+    class _DB:
+        def update_session_model(self, sid, model):
+            written.append(("model", sid, model))
+
+        def patch_session_model_config(self, sid, patch):
+            written.append(("patch", sid, patch))
+
+    stub = _make_stub(_session_db=_DB(), session_id="s1")
+    with pytest.raises(AuthError) as ei:
+        stub._persist_model_switch_to_session(_PoisonedResult())
+    assert ei.value.code == "model_provider_mismatch"
+    assert "zai-coding-plan" in str(ei.value)
+    # Refuse means refuse: nothing reaches the session DB.
+    assert not written
+
+
+def test_persist_model_switch_still_writes_unknown_model(monkeypatch):
+    """Models catalogued nowhere stay legitimate (dynamic discovery) — the
+    guard must not block a switch just because no catalog lists the model."""
+    config = _two_provider_config()
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+    written = {}
+
+    class _DB:
+        def update_session_model(self, sid, model):
+            written["model"] = (sid, model)
+
+        def patch_session_model_config(self, sid, patch):
+            written["patch"] = (sid, patch)
+
+    class _Dynamic(_Result):
+        new_model = "totally-unknown-model"
+        target_provider = "custom:reflection-beam"
+        base_url = "https://api.reflection.ai/openai/v1"
+
+    stub = _make_stub(_session_db=_DB(), session_id="s1")
+    stub._persist_model_switch_to_session(_Dynamic())
+    assert written["model"] == ("s1", "totally-unknown-model")
+    _sid, patch = written["patch"]
+    assert patch["gateway_runtime"]["provider"] == "custom:reflection-beam"

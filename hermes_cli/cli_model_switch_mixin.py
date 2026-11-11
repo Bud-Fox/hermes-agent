@@ -546,6 +546,15 @@ class CLIModelSwitchMixin:
             # simplify-code review).
             "base_url": result.base_url or None,
             "api_mode": result.api_mode or None}
+        # T-094 follow-up (write-time guard): refuse to persist a switch result whose route provably
+        # does not serve the model — that row is exactly what a later resume 404s on (incident
+        # 2026-11-11: glm-5.3-flash persisted with the api.reflection.ai route). Same fail-fast the
+        # TUI/messaging paths run at resolve time; models catalogued nowhere are NOT blocked.
+        from gateway.model_provider_guard import assert_model_served_by_runtime_provider
+        assert_model_served_by_runtime_provider(
+            result.new_model,
+            {"provider": (route["provider"] or "").split("custom:", 1)[-1], "base_url": route["base_url"]},
+        )
         try:
             db.update_session_model(sid, result.new_model)
             db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
