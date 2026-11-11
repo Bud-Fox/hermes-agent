@@ -568,6 +568,11 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+    # T-092 follow-up (2026-11-11 incident): same fail-fast as the messaging gateway — a stale
+    # persisted base_url paired with a model owned by another provider must die here with an
+    # actionable AuthError, not as a vendor 404 model_not_found after an upstream round-trip.
+    from gateway.model_provider_guard import assert_model_served_by_runtime_provider
+    assert_model_served_by_runtime_provider(model, resolution.runtime)
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
@@ -648,7 +653,15 @@ def _make_agent(
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
-    model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    try:
+        model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    except Exception:
+        # Fail-fast guard / resolution errors must surface to the TUI/Desktop user with the
+        # actionable text (e.g. /model <id> --provider <p>), never as a silent agent-build death.
+        import logging
+        logging.getLogger(__name__).warning(
+            "Model/runtime resolution rejected for session %s (model_override=%s)", sid, model_override)
+        raise
     fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)

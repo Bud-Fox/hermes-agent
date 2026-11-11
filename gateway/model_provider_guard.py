@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def assert_model_served_by_runtime_provider(model: Any, runtime_kwargs: dict) -> None:
+def assert_model_served_by_runtime_provider(model: Any, runtime_kwargs: dict, cfg: Any = None) -> None:
     from hermes_cli.auth import AuthError
     from hermes_cli.config import load_config
 
@@ -27,7 +27,8 @@ def assert_model_served_by_runtime_provider(model: Any, runtime_kwargs: dict) ->
     if not model_l:
         return
 
-    cfg = load_config()
+    if cfg is None:
+        cfg = load_config()
     providers = cfg.get("providers") or {}
     if not isinstance(providers, dict) or not providers:
         return
