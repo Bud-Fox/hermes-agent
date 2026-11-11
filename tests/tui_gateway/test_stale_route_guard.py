@@ -93,3 +93,54 @@ def test_tui_resume_stale_route_raises(monkeypatch):
         )
     assert ei.value.code == "model_provider_mismatch"
     assert "zai-coding-plan" in str(ei.value)
+
+
+# ── T-094c: a HEALED 'custom:<slug>' identity must not false-positive the guard ──
+
+
+def test_guard_passes_healed_custom_slug_identity():
+    """T-094b's heal emits 'custom:<slug>' identities (e.g. custom:zai-coding-plan).
+    The guard must strip the 'custom:' prefix before matching provider keys —
+    the healed (CORRECT) pair must pass the turn, not raise (E2E regression
+    found 2026-11-11 ~15:10 AWST)."""
+    from gateway.model_provider_guard import assert_model_served_by_runtime_provider
+
+    assert_model_served_by_runtime_provider(
+        "glm-5.3-flash",
+        {"provider": "custom:zai-coding-plan", "base_url": None},
+        cfg={"providers": PROVIDERS},
+    )
+
+
+def test_tui_resume_healed_row_resolves(monkeypatch):
+    """Integration: a poisoned row shaped like the incident, healed by
+    _stored_session_runtime_overrides into custom:zai-coding-plan, must resolve
+    cleanly through _resolve_agent_model_runtime."""
+    from tui_gateway import agent_factory
+    from tui_gateway import server as srv
+    from tui_gateway.server import _RuntimeFallbackResolution
+
+    import yaml
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({"providers": PROVIDERS}))
+
+    monkeypatch.setattr(
+        agent_factory,
+        "_resolve_runtime_with_fallback",
+        lambda kwargs: _RuntimeFallbackResolution(
+            {"provider": "custom:zai-coding-plan", "base_url": None}, None, False),
+    )
+    # Heal path first (real function, no mocking): proves the pair survives heal -> guard.
+    overrides = srv._stored_session_runtime_overrides({
+        "model": "glm-5.3-flash",
+        "model_config": '{"gateway_runtime": {"provider": "custom", "base_url": '
+                        '"https://api.reflection.ai/openai/v1", "api_mode": "chat_completions", '
+                        '"fallback_active": false}, "model": "glm-5.3-flash", '
+                        '"provider": "zai-coding-plan", "base_url": '
+                        '"https://api.z.ai/api/coding/paas/v4", "api_mode": "chat_completions"}',
+        "billing_provider": None,
+    })["model_override"]
+    assert overrides["provider"] == "custom:zai-coding-plan"
+    resolved_model, resolved_runtime = agent_factory._resolve_agent_model_runtime(overrides, None)
+    assert resolved_model == "glm-5.3-flash"
+    assert resolved_runtime["provider"] == "custom:zai-coding-plan"

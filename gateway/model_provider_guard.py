@@ -36,6 +36,11 @@ def assert_model_served_by_runtime_provider(model: Any, runtime_kwargs: dict, cf
     rid = str(runtime_kwargs.get("requested_provider")
               or runtime_kwargs.get("provider") or "").strip().lower()
     base = str(runtime_kwargs.get("base_url") or "").strip().rstrip("/")
+    # T-094c: heal paths emit keyed identities like 'custom:zai-coding-plan' — strip the
+    # 'custom:' namespace prefix so the guard matches provider config keys. Bare 'custom'
+    # (no slug) is kept as-is: it still resolves through the base_url endpoint mapping below.
+    if rid.startswith("custom:") and len(rid) > len("custom:"):
+        rid = rid[len("custom:"):]
     if rid in ("", "custom", "openrouter") and base:
         for pid, pc in providers.items():
             pc = pc or {}
