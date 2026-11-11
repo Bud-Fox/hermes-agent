@@ -146,3 +146,54 @@ class TestIsRoutableProvider:
         assert rp.is_routable_provider("legacy-endpoint") is True
         assert rp.is_routable_provider("custom:legacy-endpoint") is True
         assert rp.is_routable_provider("Legacy Endpoint") is True
+
+
+# ── T-094 follow-up: model owner beats base_url on provable mismatch ──
+
+REFLECTION_URL = "https://api.reflection.ai/openai/v1"
+ZAI_URL = "https://api.z.ai/api/coding/paas/v4"
+
+
+@pytest.fixture
+def two_entry_config(monkeypatch):
+    """Two keyed providers: reflection owns the URL, zai owns the model —
+    the exact shape of the 2026-11-11 incident's poisoned pair."""
+    config = {
+        "providers": {
+            "reflection-beam": {
+                "name": "Reflection Beam (direct)",
+                "api": REFLECTION_URL,
+                "models": ["Beam-1.0-501B-A23B"],
+            },
+            "zai-coding-plan": {
+                "base_url": ZAI_URL,
+                "models": ["glm-5.3", "glm-5.3-flash"],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", dict)
+    return config
+
+
+def test_model_owner_beats_stale_base_url(two_entry_config):
+    """Provable mismatch: glm-5.3-flash is catalogued only under zai-coding-plan,
+    and the reflection endpoint does not serve it — the persisted base_url is the
+    residue of a previous switch, not user intent, so the MODEL OWNER must win.
+    The old priority returned custom:reflection-beam and the session resumed into
+    the 404 (incident 2026-11-11)."""
+    assert rp.canonical_custom_identity(base_url=REFLECTION_URL, model="glm-5.3-flash") == "custom:zai-coding-plan"
+
+
+def test_base_url_wins_when_it_serves_the_model(two_entry_config):
+    """Legitimate base_url priority (kept by design): the endpoint genuinely
+    serves the model — no mismatch, endpoint owner stays."""
+    assert rp.canonical_custom_identity(base_url=ZAI_URL, model="glm-5.3-flash") == "custom:zai-coding-plan"
+
+
+def test_base_url_wins_for_uncatalogued_model(two_entry_config):
+    """Legitimate base_url priority (kept by design): dynamic discovery / openrouter
+    pools mean a model no catalog lists is NOT proof of mismatch — the endpoint
+    owner stays and must not be 'healed' onto a guessed entry."""
+    assert rp.canonical_custom_identity(base_url=REFLECTION_URL, model="totally-unknown-model") == "custom:reflection-beam"

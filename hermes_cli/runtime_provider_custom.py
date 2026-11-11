@@ -411,6 +411,21 @@ def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider
     # The entry the live agent resolved (*requested*) while it still serves base_url, else its owner.
     identity = session_provider_identity("custom", requested, base_url) if base_url else "custom"
     if identity != "custom":
+        # T-094 follow-up: base_url wins by default — and legitimately stays when the endpoint
+        # serves the model or the model is catalogued nowhere (managed server, dynamic discovery,
+        # openrouter pools are NOT proof of mismatch). But a PROVABLE mismatch — the model is
+        # catalogued under a DIFFERENT configured entry and this endpoint's entry does not serve
+        # it — means the persisted base_url is the residue of a previous switch, not user intent
+        # (incident 2026-11-11): prefer the model owner so resume heals instead of 404ing.
+        if model:
+            owner = find_custom_provider_identity_by_model(model)
+            if owner and owner != identity:
+                try:
+                    entry = _get_named_custom_provider(identity, resolve_credentials=False)
+                except Exception:
+                    entry = None
+                if entry is None or not _entry_serves_model(entry, str(model).strip().lower()):
+                    return owner
         return identity
     identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
